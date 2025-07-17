@@ -89,5 +89,5 @@
     "vscode:prepublish": "npm run compile",
     "watch": "tsc -watch -p ./"
   },
-  "version": "39.0.0"
+  "version": "40.0.0"
 }

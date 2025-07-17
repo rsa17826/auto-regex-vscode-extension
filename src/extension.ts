@@ -199,7 +199,7 @@ export function activate(context: vscode.ExtensionContext) {
           if (
             fileMatchRequirement &&
             !new RegExp(fileMatchRequirement, "i").test(
-              document.uri.fsPath
+              document.uri.fsPath.replaceAll("\\", "/")
             )
           ) {
             warn(
@@ -208,7 +208,7 @@ export function activate(context: vscode.ExtensionContext) {
               "does not match the current file",
               document.uri.fsPath
             )
-            return
+            continue
           }
           log(fileMatchRequirement, document.uri.fsPath)
           try {
