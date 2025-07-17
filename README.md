@@ -23,6 +23,8 @@ replaces regex based on comments or from a config file
 
 config file is **replace.regex**, same format is used, start with @name with no comment token before it.
 
+when reading regex from the config file it will act as if full is enabled on all files eccpet for itself where full acts like normal so that the regex in the config file will apply to the entire file instead of just after where it happened to be placed in the config file.
+
 # examples
 
 ```

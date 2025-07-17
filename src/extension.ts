@@ -134,12 +134,14 @@ export function activate(context: vscode.ExtensionContext) {
       }
       // clear()
       var tokens = []
-      for (var comment of comments) tokens.push(gettoken(comment))
+      for (var comment of comments) tokens.push(...gettoken(comment))
+      var fileRegStartIdx = tokens.length
+      error(tokens, "tokens")
       let regexFileContents: string
+      const regFilePath: string =
+        (vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath ?? "") +
+        "/replace.regex"
       if (vscode.workspace.workspaceFolders) {
-        const regFilePath =
-          vscode.workspace.workspaceFolders[0].uri.fsPath +
-          "/replace.regex"
         try {
           const buffer = await fs.readFile(
             vscode.Uri.file(regFilePath)
@@ -147,18 +149,18 @@ export function activate(context: vscode.ExtensionContext) {
           const decoder = new TextDecoder("utf-8")
           regexFileContents = decoder.decode(buffer)
           for (var part of detectComments(regexFileContents, null))
-            tokens.push(gettoken(part))
+            tokens.push(...gettoken(part))
         } catch (err) {
           log("Unable to read replace.regex", err)
         }
       }
 
-      tokens = tokens.flat()
       var flags: string = "gm"
       var name: string = "unnamed regex"
       var untilfail: boolean = false
       var full: boolean = false
       var fileMatchRequirement: string | undefined
+      var regCounter = 0
       for (const { token, value, end } of tokens) {
         if (token == "noregex") break
         if (
@@ -196,6 +198,7 @@ export function activate(context: vscode.ExtensionContext) {
           replace = value
         } else if (mode === "replacing" && token == "endregex") {
           // startreg = startreg.replaceAll("\\\\", "\\")
+          regCounter++
           if (
             fileMatchRequirement &&
             !new RegExp(fileMatchRequirement, "i").test(
@@ -226,11 +229,23 @@ export function activate(context: vscode.ExtensionContext) {
             continue
           }
           var i = 0
+          if (
+            document.uri.fsPath.replace("\\", "/") !==
+              regFilePath.replace("\\", "/") &&
+            regCounter > fileRegStartIdx
+          )
+            full = true
           var textAfterEnd = full ? newText : newText.substring(end)
 
           while (i++ == 0 || untilfail) {
             if (regex.test(textAfterEnd)) {
-              warn("replacing...", [regex, replace])
+              warn(
+                regCounter,
+                fileRegStartIdx,
+                regCounter > fileRegStartIdx,
+                "replacing...",
+                [regex, replace]
+              )
               if (full) newText = newText.replace(regex, replace)
               else
                 newText =
@@ -245,7 +260,16 @@ export function activate(context: vscode.ExtensionContext) {
                 break
               }
             } else {
-              warn("not replacing...", [regex, replace])
+              warn(
+                regCounter,
+                fileRegStartIdx,
+                regCounter > fileRegStartIdx,
+                document.uri.fsPath !== regFilePath,
+                document.uri.fsPath,
+                regFilePath,
+                "not replacing...",
+                [regex, replace]
+              )
               break
             }
           }
