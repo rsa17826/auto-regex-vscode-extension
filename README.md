@@ -25,7 +25,8 @@ config file is **replace.regex**, same format is used, start with @name with no 
 
 # examples
 
-```[html]
+```
+[html]
 <!--
 @name fix html comments in html
 @regex (<!-ƒ-.*(?<!-ƒ->)) *$\n(?:( *) ?)
@@ -42,8 +43,8 @@ $2/*
 @endregex
 
 -->
-```
-```[css]
+
+[css]
 /*
 @name fix css comments in css
 @regex (/\*.*(?<!\*ƒ/)) *$\n(?:( *) ?)
@@ -53,8 +54,9 @@ $2/*
 @endregex
 
 */
-```
-```[ahk]
+
+
+[ahk]
 ; @name format includes
 ; @regex ^(#\w+ .*\n)\n+(#)
 ; @flags gim
