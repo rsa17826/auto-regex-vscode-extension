@@ -1,0 +1,93 @@
+{
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:html",
+    "onLanguage:ahk",
+    "onLanguage:python",
+    "onLanguage:gdscript",
+    "onLanguage:regex"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "contributes": {
+    "commands": [],
+    "configuration": [
+      {
+        "properties": {
+          "auto-regex.show regex errors as popup": {
+            "default": 0,
+            "description": "show regex errors as a popup",
+            "type": "boolean"
+          }
+        },
+        "title": ""
+      }
+    ],
+    "grammars": [
+      {
+        "injectTo": [
+          "source.js",
+          "source.ts",
+          "source.ahk2",
+          "source.python",
+          "source.gdscript",
+          "source.regex"
+        ],
+        "path": "./syntaxes/jsregex.json",
+        "scopeName": "source.regex"
+      },
+      {
+        "language": "regex",
+        "path": "./syntaxes/jsregex.json",
+        "scopeName": "source.regex"
+      }
+    ],
+    "languages": [
+      {
+        "aliases": [
+          "regex"
+        ],
+        "configuration": "./language-configuration.json",
+        "extensions": [
+          ".regex"
+        ],
+        "id": "regex"
+      }
+    ]
+  },
+  "dependencies": {
+    "@types/vscode": "^1.91.0",
+    "@vscode/vsce": "^3.1.1"
+  },
+  "description": "",
+  "devDependencies": {
+    "@types/mocha": "^10.0.8",
+    "@types/node": "20.x",
+    "@typescript-eslint/eslint-plugin": "^8.7.0",
+    "@typescript-eslint/parser": "^8.7.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "eslint": "^9.11.1",
+    "js-yaml": "^4.1.0",
+    "typescript": "^5.6.2"
+  },
+  "displayName": "auto regex",
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "main": "./out/extension.js",
+  "name": "auto-regex",
+  "publisher": "rssaromeo",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "lint": "eslint src",
+    "pretest": "npm run compile && npm run lint",
+    "test": "vscode-test",
+    "vscode:prepublish": "npm run compile",
+    "watch": "tsc -watch -p ./"
+  },
+  "version": "39.0.0"
+}

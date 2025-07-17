@@ -1,0 +1,9 @@
+( *)((\1// @name.*\n)?(?:\1// @regex.*\n)(?:\1// @flags.*\n)?(?:\1// @replace.*\n)(?:\1// @endregex.*\n))
+(?<=// ?)@(regex|replace|endregex)
+full
+{
+          "begin": "\\[",
+          "end": "(?<!\\\\)\\]",
+          "name": "regex.any",
+          "patterns": [{ "include": "#main" }]
+        }

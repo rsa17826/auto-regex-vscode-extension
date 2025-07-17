@@ -1,0 +1,29 @@
+(?<!#)(?:(?=\w)(?=\S)(?=\D)(?=\d)(?=\s)(?=\W)(?=\S{5,})(?=\w{2,5})[a-zA-Z0-9!@#$%^&*()_+={}$$$$:;"'<>,.?/~`-]*)(?<!\d)(?=\d{2,})(?=\w{3,})(?=\s{1,})(?=\W{1,})(?=\D{1,})(?=\S{2,})(?=\d{1,})(?!#)
+Breakdown of the Regex Features Used:
+Lookbehind (?<!#): Asserts that what precedes the current position is not a #.
+Lookaheads (?=...): Multiple lookaheads to assert various conditions:
+(?=\w): At least one word character.
+(?=\S): At least one non-whitespace character.
+(?=\D): At least one non-digit character.
+(?=\d): At least one digit.
+(?=\s): At least one whitespace character.
+(?=\W): At least one non-word character.
+(?=\S{5,}): At least five non-whitespace characters.
+(?=\w{2,5}): Between two and five word characters.
+Character Class [a-zA-Z0-9!@#$%^&*()_+={}$$$$:;"'<>,.?/~-]*`: Matches any combination of letters, digits, and special characters.
+Negative Lookbehind (?<!\d): Asserts that what precedes the current position is not a digit.
+More Lookaheads: Additional conditions to match:
+(?=\d{2,}): At least two digits.
+(?=\w{3,}): At least three word characters.
+(?=\s{1,}): At least one whitespace character.
+(?=\W{1,}): At least one non-word character.
+(?=\D{1,}): At least one non-digit character.
+(?=\S{2,}): At least two non-whitespace characters.
+(?=\d{1,}): At least one digit.
+Negative Lookahead (?!#): Asserts that what follows the current position is not a #.
+This regex is intentionally convoluted and serves no real purpose, making it suitable for testing regex parsers.
+
+
+
+
+

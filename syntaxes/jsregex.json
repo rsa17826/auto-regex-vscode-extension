@@ -1,0 +1,193 @@
+{
+  "scopeName": "source.regex",
+  "injectionSelector": "L:source.js, L:source.ts, L:source.ahk2, L:source.python, L:source.gdscript, L:source.regex",
+  "patterns": [{ "include": "#setup" }, { "include": "#tags" }],
+  "repository": {
+    "tags": {
+      "patterns": [
+        {
+          "match": "(?:// |; |# |^ *)@(noregex)",
+          "name": "regex.tag.noregex",
+          "patterns": [
+            {
+              "match": ".",
+              "name": "regex.error"
+            }
+          ]
+        },
+        {
+          "match": "(?:// |; |# |^ *)@(full|untilfail)(?: |$)",
+          "name": "regex.tag.optional",
+          "patterns": [
+            {
+              "match": ".",
+              "name": "regex.error"
+            }
+          ]
+        },
+        {
+          "begin": "(?:// |; |# |^ *)@(name) ",
+          "end": "$",
+          "name": "regex.tag.name",
+          "patterns": [
+            {
+              "match": ".",
+              "name": "regex.text"
+            }
+          ]
+        },
+        {
+          "match": "(?:// |; |# |^ *)@(endregex)(?: |$)",
+          "name": "regex.tag.forced",
+          "patterns": [
+            {
+              "match": ".",
+              "name": "regex.error"
+            }
+          ]
+        }
+      ]
+    },
+    "setup": {
+      "patterns": [
+        {
+          "begin": "(?:// |; |# |^ *)@flags ",
+          "end": "$",
+          "name": "regex.tag.optional",
+          "patterns": [
+            {
+              "match": "(?i)(?<= )(?!.*(.).*\\1)[imsxguy]{1,}$",
+              "name": "regex.replacetext"
+            },
+            {
+              "match": ".",
+              "name": "regex.error"
+            }
+          ]
+        },
+        {
+          "begin": "(?:// |; |# |^ *)@(regex|file) ",
+          "end": "$",
+          "name": "regex.tag.forced",
+          "patterns": [{ "include": "#any" }]
+        },
+        {
+          "begin": "(?:// |; |# |^ *)@replace(?: |$)",
+          "end": "$",
+          "name": "regex.tag.forced",
+          "patterns": [
+            {
+              "match": ".",
+              "name": "regex.replacetext"
+            }
+          ]
+        }
+      ]
+    },
+    "group": {
+      "patterns": [
+        {
+          "begin": "\\((?:\\?<!|\\?=|\\?:|\\?!|\\?<=)?",
+          "end": "\\)|\\n|$",
+          "name": "regex.group",
+          "patterns": [
+            {
+              "match": "(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!(?<!\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\\\)\\())(?:\\{(\\d(?:,\\d?)?)\\}|\\{((?:,\\d?)?)\\}|[\\*\\+]|\\?#?)",
+              "name": "regex.error"
+            },
+            { "include": "#any" }
+          ]
+        }
+      ]
+    },
+    "main": {
+      "patterns": [
+        {
+          "match": "(?i)\\\\[wsrntfvd]",
+          "name": "regex.specialescape"
+        },
+        {
+          "match": "\\\\.",
+          "name": "regex.escaped"
+        }
+      ]
+    },
+    "complex": {
+      "patterns": [
+        { "include": "#main" },
+        { "match": "\\|", "name": "regex.group" },
+        {
+          "match": "\\.",
+          "name": "regex.any"
+        },
+        {
+          "match": "\\?{3,}",
+          "name": "regex.error"
+        },
+        {
+          "match": "(?:\\{(\\d(?:,\\d?)?)\\}|\\{((?:,\\d?)?)\\}|[\\*\\+])\\?{2,}",
+          "name": "regex.error"
+        },
+        {
+          "match": "(?:\\{(\\d(?:,\\d?)?)\\}|\\{((?:,\\d?)?)\\}|\\?)[\\*\\+]",
+          "name": "regex.error"
+        },
+        {
+          "match": "[\\*\\+]{2,}",
+          "name": "regex.error"
+        },
+        {
+          "match": "(?:\\{(\\d(?:,\\d?)?)\\}|\\{((?:,\\d?)?)\\})[\\*\\+]",
+          "name": "regex.error"
+        },
+        {
+          "match": "(?:\\*|\\?|\\+|(?:\\{(\\d*(?:,\\d*)?)\\}|\\{((?:,\\d*)?)\\}))",
+          "name": "regex.repeater"
+        }
+      ]
+    },
+    "any": {
+      "patterns": [
+        { "include": "#complex" },
+        { "include": "#group" },
+        {
+          "begin": "\\[\\^?",
+          "end": "(?<!(?<!(?<!(?<!\\\\)\\\\)\\\\)\\\\)\\]",
+          "name": "regex.any",
+          "patterns": [
+            { "include": "#main" },
+            {
+              "match": ".-\\\\.",
+              "name": "regex.group"
+            },
+            {
+              "match": ".-.(?<!\\])",
+              "name": "regex.group"
+            },
+            {
+              "match": ".",
+              "name": "regex.anytext"
+            }
+          ]
+        },
+
+        {
+          "match": "\\]",
+          "name": "regex.error"
+        },
+        {
+          "match": "\\)",
+          "name": "regex.error"
+        },
+        {
+          "match": "\\^|\\$",
+          "name": "regex.any"
+        },
+        {
+          "match": ".",
+          "name": "regex.text"
+        }
+      ]
+    }
+  }
+}
