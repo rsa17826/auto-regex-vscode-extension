@@ -211,6 +211,8 @@ export function activate(context: vscode.ExtensionContext) {
               "does not match the current file",
               document.uri.fsPath
             )
+            name = "unnamed regex"
+            mode = "inactive"
             continue
           }
           log(fileMatchRequirement, document.uri.fsPath)
