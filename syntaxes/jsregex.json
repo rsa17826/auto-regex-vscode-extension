@@ -103,7 +103,7 @@
     "main": {
       "patterns": [
         {
-          "match": "(?i)\\\\[wsrntfvd]",
+          "match": "(?i)\\\\[wsrntfvdb]",
           "name": "regex.specialescape"
         },
         {
