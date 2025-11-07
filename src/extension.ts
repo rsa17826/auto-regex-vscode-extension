@@ -8,6 +8,8 @@
 
 import * as vscode from "vscode"
 const fs = vscode.workspace.fs
+import * as afs from "fs"
+import * as path from "path"
 
 Object.assign(global, console)
 declare global {
@@ -53,6 +55,47 @@ function getlang() {
   return langid
 }
 export function activate(context: vscode.ExtensionContext) {
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "autoRegex.applyRegexesToAllFiles",
+      async () => {
+        const editor = vscode.window.activeTextEditor
+
+        if (editor) {
+          for (const document of vscode.workspace.textDocuments) {
+            if (document.fileName.endsWith(".gd")) {
+              await applyRegex(document)
+            }
+          }
+        }
+
+        const workspaceFolders = vscode.workspace.workspaceFolders
+        if (workspaceFolders) {
+          for (const folder of workspaceFolders) {
+            await findAndReplaceInDirectory(folder.uri.fsPath)
+          }
+        }
+      }
+    )
+  )
+  async function findAndReplaceInDirectory(directory: string) {
+    const files = afs.readdirSync(directory)
+
+    for (const file of files) {
+      const filePath = path.join(directory, file)
+      const stat = afs.statSync(filePath)
+
+      if (stat.isDirectory()) {
+        await findAndReplaceInDirectory(filePath)
+      } else if (file.endsWith(".gd")) {
+        const document = await vscode.workspace.openTextDocument(
+          filePath
+        )
+        await applyRegex(document)
+      }
+    }
+  }
+
   const activeMessages = new Map()
 
   function showError(messageName: string, message: string) {
@@ -75,231 +118,237 @@ export function activate(context: vscode.ExtensionContext) {
     }
   }
   log("Auto Regex extension is now active!")
-  const disposable = vscode.workspace.onDidSaveTextDocument(
-    async (document) => {
-      const comments = detectComments(document.getText())
-      log(comments)
-      let mode = "inactive"
-      let startreg = ""
-      let replace = ""
-      let text = document.getText()
-      // clear()
-      // text = text.replaceAll("\\", "☺")
-      // log(3, [text.substring(0, 100)], 3)
-      // log(3, [text.substring(0, 100)], 3)
-      text = text.replaceAll("\r\n", "\n")
-      // log(3, [text.substring(0, 100)], 3)
-      // text = text.replaceAll("☺", "\\")
-      // log(3, [text.substring(0, 100)], 3)
-      let newText = text
+  interface SelfSaved {
+    [key: string]: any
+  }
 
-      // let lastCommentEnd = 0
-      function gettoken({
-        match,
-        start,
-        length,
-      }: {
-        match: string
-        start: number
-        length: number
-      }): {
-        token: string
-        value: string
-        string: string
-        end: any
-      }[] {
-        var strs = match
-          .replaceAll("ƒ", "")
-          // .replaceAll("\\", "☺")
-          .split("\n")
-        // .map((e) => e.replaceAll("☺", "\\"))
-        var temparr: string[] = []
-        for (var str of strs) {
-          if (str.startsWith("@")) {
-            temparr.push(str)
-          } else {
-            if (temparr.length > 0)
-              temparr.push(temparr.pop() + "\n" + str)
-          }
-        }
-        return temparr.map((e) => {
-          // log(e, e.match(/^@\w+ ([^]*)$/)?.[1])
-          return {
-            token: e.match(/^@(\w+)/)?.[1] ?? "",
-            value: e.match(/^@\w+ ?([^]*)$/)?.[1] ?? "",
-            string: e,
-            end: start + length,
-          }
-        })
-      }
-      // clear()
-      var tokens = []
-      for (var comment of comments) tokens.push(...gettoken(comment))
-      var fileRegStartIdx = tokens.length
-      error(tokens, "tokens")
-      let regexFileContents: string
-      const regFilePath: string =
-        (vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath ?? "") +
-        "/replace.regex"
-      if (vscode.workspace.workspaceFolders) {
-        try {
-          const buffer = await fs.readFile(
-            vscode.Uri.file(regFilePath)
-          )
-          const decoder = new TextDecoder("utf-8")
-          regexFileContents = decoder.decode(buffer)
-          for (var part of detectComments(regexFileContents, null))
-            tokens.push(...gettoken(part))
-        } catch (err) {
-          log("Unable to read replace.regex", err)
+  const selfSaved: SelfSaved = {}
+
+  async function applyRegex(document: vscode.TextDocument) {
+    const uriString = document.uri.toString()
+    if (selfSaved[uriString]) {
+      delete selfSaved[uriString]
+      return
+    }
+
+    const comments = detectComments(document.getText())
+    log(comments)
+    let mode = "inactive"
+    let startreg = ""
+    let replace = ""
+    let text = document.getText()
+    // clear()
+    // text = text.replaceAll("\\", "☺")
+    // log(3, [text.substring(0, 100)], 3)
+    // log(3, [text.substring(0, 100)], 3)
+    text = text.replaceAll("\r\n", "\n")
+    // log(3, [text.substring(0, 100)], 3)
+    // text = text.replaceAll("☺", "\\")
+    // log(3, [text.substring(0, 100)], 3)
+    let newText = text
+
+    // let lastCommentEnd = 0
+    function gettoken({
+      match,
+      start,
+      length,
+    }: {
+      match: string
+      start: number
+      length: number
+    }): {
+      token: string
+      value: string
+      string: string
+      end: any
+    }[] {
+      var strs = match
+        .replaceAll("ƒ", "")
+        // .replaceAll("\\", "☺")
+        .split("\n")
+      // .map((e) => e.replaceAll("☺", "\\"))
+      var temparr: string[] = []
+      for (var str of strs) {
+        if (str.startsWith("@")) {
+          temparr.push(str)
+        } else {
+          if (temparr.length > 0)
+            temparr.push(temparr.pop() + "\n" + str)
         }
       }
-
-      var flags: string = "gm"
-      var name: string = "unnamed regex"
-      var untilfail: boolean = false
-      var full: boolean = false
-      var fileMatchRequirement: string | undefined
-      var regCounter = 0
-      for (const { token, value, end } of tokens) {
-        if (token == "noregex") break
-        if (
-          (mode == "replacing" || mode == "started") &&
-          token == "untilfail"
-        ) {
-          untilfail = true
-        } else if (
-          (mode === "inactive" ||
-            mode == "replacing" ||
-            mode == "started") &&
-          token == "file"
-        ) {
-          fileMatchRequirement = value
-        } else if (
-          (mode == "replacing" || mode == "started") &&
-          token == "full"
-        ) {
-          full = true
-        } else if (
-          (mode == "replacing" || mode == "started") &&
-          token == "flags"
-        ) {
-          flags = value
-        } else if (mode === "inactive" && token == "name") {
-          name = value
-        } else if (mode === "inactive" && token == "regex") {
-          mode = "started"
-          flags = "gm"
-          untilfail = false
-          full = false
-          startreg = value
-        } else if (mode === "started" && token == "replace") {
-          mode = "replacing"
-          replace = value
-        } else if (mode === "replacing" && token == "endregex") {
-          // startreg = startreg.replaceAll("\\\\", "\\")
-          regCounter++
-          if (
-            fileMatchRequirement &&
-            !new RegExp(fileMatchRequirement, "i").test(
-              document.uri.fsPath.replaceAll("\\", "/")
-            )
-          ) {
-            warn(
-              "fileMatchRequirement",
-              fileMatchRequirement,
-              "does not match the current file",
-              document.uri.fsPath
-            )
-            name = "unnamed regex"
-            mode = "inactive"
-            continue
-          }
-          log(fileMatchRequirement, document.uri.fsPath)
-          try {
-            var regex = new RegExp(startreg, flags)
-          } catch (e: any) {
-            mode = "inactive"
-            showError(
-              name,
-              `@error ${name}\n/${startreg}/${flags}\n${e.message}`
-            )
-            error(
-              `@error ${name}: /${startreg}/${flags}\n`,
-              e.message
-            )
-            continue
-          }
-          var i = 0
-          if (
-            document.uri.fsPath.replace("\\", "/") !==
-              regFilePath.replace("\\", "/") &&
-            regCounter > fileRegStartIdx
-          )
-            full = true
-          var textAfterEnd = full ? newText : newText.substring(end)
-
-          while (i++ == 0 || untilfail) {
-            if (regex.test(textAfterEnd)) {
-              warn(
-                regCounter,
-                fileRegStartIdx,
-                regCounter > fileRegStartIdx,
-                "replacing...",
-                [regex, replace]
-              )
-              if (full) newText = newText.replace(regex, replace)
-              else
-                newText =
-                  newText.substring(0, end) +
-                  (textAfterEnd = textAfterEnd.replace(
-                    regex,
-                    replace
-                  ))
-              // warn("newText", newText)
-              if (i > 3000) {
-                error("too many replacements")
-                break
-              }
-            } else {
-              warn(
-                regCounter,
-                fileRegStartIdx,
-                regCounter > fileRegStartIdx,
-                document.uri.fsPath !== regFilePath,
-                document.uri.fsPath,
-                regFilePath,
-                "not replacing...",
-                [regex, replace]
-              )
-              break
-            }
-          }
-          name = "unnamed regex"
-          mode = "inactive"
+      return temparr.map((e) => {
+        // log(e, e.match(/^@\w+ ([^]*)$/)?.[1])
+        return {
+          token: e.match(/^@(\w+)/)?.[1] ?? "",
+          value: e.match(/^@\w+ ?([^]*)$/)?.[1] ?? "",
+          string: e,
+          end: start + length,
         }
-      }
-
-      if (newText !== text) {
-        const edit = new vscode.WorkspaceEdit()
-        edit.replace(
-          document.uri,
-          new vscode.Range(
-            0,
-            0,
-            document.lineCount,
-            document.lineAt(
-              document.lineCount - 1
-            ).range.end.character
-          ),
-          newText
-        )
-        vscode.workspace.applyEdit(edit).then(() => {
-          log(`Replacement successful.`)
-        })
+      })
+    }
+    // clear()
+    var tokens = []
+    for (var comment of comments) tokens.push(...gettoken(comment))
+    var fileRegStartIdx = tokens.length
+    error(tokens, "tokens")
+    let regexFileContents: string
+    const regFilePath: string =
+      (vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath ?? "") +
+      "/replace.regex"
+    if (vscode.workspace.workspaceFolders) {
+      try {
+        const buffer = await fs.readFile(vscode.Uri.file(regFilePath))
+        const decoder = new TextDecoder("utf-8")
+        regexFileContents = decoder.decode(buffer)
+        for (var part of detectComments(regexFileContents, null))
+          tokens.push(...gettoken(part))
+      } catch (err) {
+        log("Unable to read replace.regex", err)
       }
     }
-  )
+
+    var flags: string = "gm"
+    var name: string = "unnamed regex"
+    var untilfail: boolean = false
+    var full: boolean = false
+    var fileMatchRequirement: string | undefined
+    var regCounter = 0
+    for (const { token, value, end } of tokens) {
+      if (token == "noregex") break
+      if (
+        (mode == "replacing" || mode == "started") &&
+        token == "untilfail"
+      ) {
+        untilfail = true
+      } else if (
+        (mode === "inactive" ||
+          mode == "replacing" ||
+          mode == "started") &&
+        token == "file"
+      ) {
+        fileMatchRequirement = value
+      } else if (
+        (mode == "replacing" || mode == "started") &&
+        token == "full"
+      ) {
+        full = true
+      } else if (
+        (mode == "replacing" || mode == "started") &&
+        token == "flags"
+      ) {
+        flags = value
+      } else if (mode === "inactive" && token == "name") {
+        name = value
+      } else if (mode === "inactive" && token == "regex") {
+        mode = "started"
+        flags = "gm"
+        untilfail = false
+        full = false
+        startreg = value
+      } else if (mode === "started" && token == "replace") {
+        mode = "replacing"
+        replace = value
+      } else if (mode === "replacing" && token == "endregex") {
+        // startreg = startreg.replaceAll("\\\\", "\\")
+        regCounter++
+        if (
+          fileMatchRequirement &&
+          !new RegExp(fileMatchRequirement, "i").test(
+            document.uri.fsPath.replaceAll("\\", "/")
+          )
+        ) {
+          warn(
+            "fileMatchRequirement",
+            fileMatchRequirement,
+            "does not match the current file",
+            document.uri.fsPath
+          )
+          name = "unnamed regex"
+          mode = "inactive"
+          continue
+        }
+        log(fileMatchRequirement, document.uri.fsPath)
+        try {
+          var regex = new RegExp(startreg, flags)
+        } catch (e: any) {
+          mode = "inactive"
+          showError(
+            name,
+            `@error ${name}\n/${startreg}/${flags}\n${e.message}`
+          )
+          error(`@error ${name}: /${startreg}/${flags}\n`, e.message)
+          continue
+        }
+        var i = 0
+        if (
+          document.uri.fsPath.replace("\\", "/") !==
+            regFilePath.replace("\\", "/") &&
+          regCounter > fileRegStartIdx
+        )
+          full = true
+        var textAfterEnd = full ? newText : newText.substring(end)
+
+        while (i++ == 0 || untilfail) {
+          if (regex.test(textAfterEnd)) {
+            warn(
+              regCounter,
+              fileRegStartIdx,
+              regCounter > fileRegStartIdx,
+              "replacing...",
+              [regex, replace]
+            )
+            if (full) newText = newText.replace(regex, replace)
+            else
+              newText =
+                newText.substring(0, end) +
+                (textAfterEnd = textAfterEnd.replace(regex, replace))
+            // warn("newText", newText)
+            if (i > 3000) {
+              error("too many replacements")
+              break
+            }
+          } else {
+            warn(
+              regCounter,
+              fileRegStartIdx,
+              regCounter > fileRegStartIdx,
+              document.uri.fsPath !== regFilePath,
+              document.uri.fsPath,
+              regFilePath,
+              "not replacing...",
+              [regex, replace]
+            )
+            break
+          }
+        }
+        name = "unnamed regex"
+        mode = "inactive"
+      }
+    }
+
+    if (newText !== text) {
+      const edit = new vscode.WorkspaceEdit()
+      edit.replace(
+        document.uri,
+        new vscode.Range(
+          0,
+          0,
+          document.lineCount,
+          document.lineAt(document.lineCount - 1).range.end.character
+        ),
+        newText
+      )
+      vscode.workspace.applyEdit(edit).then(async () => {
+        log(`Replacement successful.`)
+        selfSaved[uriString] = 1
+        if (!(await document.save())) {
+          delete selfSaved[uriString]
+        }
+      })
+    }
+  }
+  const disposable =
+    vscode.workspace.onDidSaveTextDocument(applyRegex)
 
   context.subscriptions.push(disposable)
 }
