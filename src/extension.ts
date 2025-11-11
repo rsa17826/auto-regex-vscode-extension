@@ -56,19 +56,57 @@ function getlang() {
 }
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
+    vscode.languages.registerDocumentRangeFormattingEditProvider(
+      "*",
+      {
+        provideDocumentRangeFormattingEdits: async (
+          document: vscode.TextDocument,
+          range: vscode.Range,
+          options: vscode.FormattingOptions,
+          token: vscode.CancellationToken
+        ): Promise<vscode.TextEdit[]> => {
+          const uriString = document.uri.toString()
+          if (selfSaved[uriString]) {
+            delete selfSaved[uriString]
+            return []
+          }
+
+          const comments = detectComments(document.getText())
+          log(comments)
+          let text = document.getText().replaceAll("\r\n", "\n")
+
+          let newText = await modifyText(text, comments, document)
+
+          if (newText !== document.getText()) {
+            const edit = vscode.TextEdit.replace(
+              new vscode.Range(
+                0,
+                0,
+                document.lineCount,
+                document.lineAt(
+                  document.lineCount - 1
+                ).range.end.character
+              ),
+              newText
+            )
+            return [edit]
+          }
+
+          return []
+        },
+      }
+    )
+  )
+  context.subscriptions.push(
     vscode.commands.registerCommand(
       "autoRegex.applyRegexesToAllFiles",
       async () => {
         const editor = vscode.window.activeTextEditor
-
         if (editor) {
           for (const document of vscode.workspace.textDocuments) {
-            if (document.fileName.endsWith(".gd")) {
-              await applyRegex(document)
-            }
+            await applyRegex(document)
           }
         }
-
         const workspaceFolders = vscode.workspace.workspaceFolders
         if (workspaceFolders) {
           for (const folder of workspaceFolders) {
@@ -80,14 +118,12 @@ export function activate(context: vscode.ExtensionContext) {
   )
   async function findAndReplaceInDirectory(directory: string) {
     const files = afs.readdirSync(directory)
-
     for (const file of files) {
       const filePath = path.join(directory, file)
       const stat = afs.statSync(filePath)
-
       if (stat.isDirectory()) {
         await findAndReplaceInDirectory(filePath)
-      } else if (file.endsWith(".gd")) {
+      } else {
         const document = await vscode.workspace.openTextDocument(
           filePath
         )
@@ -123,20 +159,14 @@ export function activate(context: vscode.ExtensionContext) {
   }
 
   const selfSaved: SelfSaved = {}
-
-  async function applyRegex(document: vscode.TextDocument) {
-    const uriString = document.uri.toString()
-    if (selfSaved[uriString]) {
-      delete selfSaved[uriString]
-      return
-    }
-
-    const comments = detectComments(document.getText())
-    log(comments)
+  async function modifyText(
+    text: string,
+    comments: { match: string; start: number; length: number }[],
+    document: vscode.TextDocument
+  ): Promise<string> {
     let mode = "inactive"
     let startreg = ""
     let replace = ""
-    let text = document.getText()
     // clear()
     // text = text.replaceAll("\\", "☺")
     // log(3, [text.substring(0, 100)], 3)
@@ -325,6 +355,19 @@ export function activate(context: vscode.ExtensionContext) {
         mode = "inactive"
       }
     }
+    return newText
+  }
+  async function applyRegex(document: vscode.TextDocument) {
+    const uriString = document.uri.toString()
+    if (selfSaved[uriString]) {
+      delete selfSaved[uriString]
+      return
+    }
+
+    const comments = detectComments(document.getText())
+    log(comments)
+    let text = document.getText()
+    let newText = await modifyText(text, comments, document)
 
     if (newText !== text) {
       const edit = new vscode.WorkspaceEdit()
@@ -341,6 +384,7 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.workspace.applyEdit(edit).then(async () => {
         log(`Replacement successful.`)
         selfSaved[uriString] = 1
+        // await vscode.commands.executeCommand("workbench.action.files.saveWithoutFormatting")
         if (!(await document.save())) {
           delete selfSaved[uriString]
         }
