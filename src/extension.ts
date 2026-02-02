@@ -19,26 +19,29 @@ declare global {
   function info(...args: any[]): void
   function clear(...args: any[]): void
 }
-function getlang() {
-  const editor = vscode.window.activeTextEditor
-  if (!editor) {
-    vscode.window.showInformationMessage(
-      "No active editor found. Please open a file."
-    )
-    return ""
-  }
+function getlang(
+  editor: vscode.TextEditor | undefined = vscode.window
+    .activeTextEditor,
+) {
+  if (!editor) return "" // Return empty instead of showing a message to avoid popups in background tasks
+  // if (!editor) {
+  //   vscode.window.showInformationMessage(
+  //     "No active editor found. Please open a file.",
+  //   )
+  //   return ""
+  // }
   const document = editor.document
   const cursorPosition = editor.selection.active
   const thisLine = cursorPosition.line
   var fulltext = document.getText().replaceAll("\r\n", "\n")
   const scriptMatches = fulltext.matchAll(
-    /(?<=<script\b[^>]*>)([\s\S]*?)(?=<\/script>)/g
+    /(?<=<script\b[^>]*>)([\s\S]*?)(?=<\/script>)/g,
   )
   let isThisLineInsideScriptTag = false
   for (const match of scriptMatches) {
     const matchStartPosition = document.positionAt(match.index)
     const matchEndPosition = document.positionAt(
-      match.index + match[1].length
+      match.index + match[1].length,
     )
     const matchEndLine = document.lineAt(matchEndPosition).lineNumber
     if (
@@ -63,8 +66,11 @@ export function activate(context: vscode.ExtensionContext) {
           document: vscode.TextDocument,
           range: vscode.Range,
           options: vscode.FormattingOptions,
-          token: vscode.CancellationToken
+          token: vscode.CancellationToken,
         ): Promise<vscode.TextEdit[]> => {
+          if (document.uri.scheme !== "file") {
+            return []
+          }
           const uriString = document.uri.toString()
           if (selfSaved[uriString]) {
             delete selfSaved[uriString]
@@ -83,19 +89,18 @@ export function activate(context: vscode.ExtensionContext) {
                 0,
                 0,
                 document.lineCount,
-                document.lineAt(
-                  document.lineCount - 1
-                ).range.end.character
+                document.lineAt(document.lineCount - 1).range.end
+                  .character,
               ),
-              newText
+              newText,
             )
             return [edit]
           }
 
           return []
         },
-      }
-    )
+      },
+    ),
   )
   context.subscriptions.push(
     vscode.commands.registerCommand(
@@ -113,8 +118,8 @@ export function activate(context: vscode.ExtensionContext) {
             await findAndReplaceInDirectory(folder.uri.fsPath)
           }
         }
-      }
-    )
+      },
+    ),
   )
   async function findAndReplaceInDirectory(directory: string) {
     const files = afs.readdirSync(directory)
@@ -124,9 +129,8 @@ export function activate(context: vscode.ExtensionContext) {
       if (stat.isDirectory()) {
         await findAndReplaceInDirectory(filePath)
       } else {
-        const document = await vscode.workspace.openTextDocument(
-          filePath
-        )
+        const document =
+          await vscode.workspace.openTextDocument(filePath)
         await applyRegex(document)
       }
     }
@@ -162,7 +166,7 @@ export function activate(context: vscode.ExtensionContext) {
   async function modifyText(
     text: string,
     comments: { match: string; start: number; length: number }[],
-    document: vscode.TextDocument
+    document: vscode.TextDocument,
   ): Promise<string> {
     let mode = "inactive"
     let startreg = ""
@@ -284,14 +288,14 @@ export function activate(context: vscode.ExtensionContext) {
         if (
           fileMatchRequirement &&
           !new RegExp(fileMatchRequirement, "i").test(
-            document.uri.fsPath.replaceAll("\\", "/")
+            document.uri.fsPath.replaceAll("\\", "/"),
           )
         ) {
           warn(
             "fileMatchRequirement",
             fileMatchRequirement,
             "does not match the current file",
-            document.uri.fsPath
+            document.uri.fsPath,
           )
           name = "unnamed regex"
           mode = "inactive"
@@ -304,7 +308,7 @@ export function activate(context: vscode.ExtensionContext) {
           mode = "inactive"
           showError(
             name,
-            `@error ${name}\n/${startreg}/${flags}\n${e.message}`
+            `@error ${name}\n/${startreg}/${flags}\n${e.message}`,
           )
           error(`@error ${name}: /${startreg}/${flags}\n`, e.message)
           continue
@@ -325,7 +329,7 @@ export function activate(context: vscode.ExtensionContext) {
               fileRegStartIdx,
               regCounter > fileRegStartIdx,
               "replacing...",
-              [regex, replace]
+              [regex, replace],
             )
             if (full) newText = newText.replace(regex, replace)
             else
@@ -346,7 +350,7 @@ export function activate(context: vscode.ExtensionContext) {
               document.uri.fsPath,
               regFilePath,
               "not replacing...",
-              [regex, replace]
+              [regex, replace],
             )
             break
           }
@@ -377,9 +381,9 @@ export function activate(context: vscode.ExtensionContext) {
           0,
           0,
           document.lineCount,
-          document.lineAt(document.lineCount - 1).range.end.character
+          document.lineAt(document.lineCount - 1).range.end.character,
         ),
-        newText
+        newText,
       )
       vscode.workspace.applyEdit(edit).then(async () => {
         log(`Replacement successful.`)
@@ -391,16 +395,23 @@ export function activate(context: vscode.ExtensionContext) {
       })
     }
   }
-  const disposable =
-    vscode.workspace.onDidSaveTextDocument(applyRegex)
-
+  const disposable = vscode.workspace.onDidSaveTextDocument(
+    (document) => {
+      // 🛑 FIX: Prevent the regex logic from running on the settings file
+      if (document.uri.scheme !== "file") {
+        return
+      }
+      applyRegex(document)
+    },
+  )
   context.subscriptions.push(disposable)
 }
 
 function detectComments(
   text: string,
-  LANG: string | null = getlang()
+  LANG: string | null = getlang(),
 ): { match: string; start: number; length: number }[] {
+  if (!LANG) return [] // 🛑 FIX: If no language is detected, don't try to regex comments
   const comments = []
   text = text
     // .replaceAll("\\\\", "\\")
@@ -449,11 +460,11 @@ function detectComments(
   if (lineComment !== undefined) {
     const lineCommentRegex = new RegExp(
       `^( *)(?:${escapeRegExp(lineComment)}$|${escapeRegExp(
-        lineComment
+        lineComment,
       )}${lineComment ? " " : ""}.*)(\\r?\\n\\1(?:${escapeRegExp(
-        lineComment
+        lineComment,
       )}$|${escapeRegExp(lineComment)} .*))*`,
-      "gm"
+      "gm",
     )
     log("lineCommentRegex", lineCommentRegex)
     var lastidx = 0
@@ -462,7 +473,7 @@ function detectComments(
       comments.push({
         match: String(match[0]).replaceAll(
           new RegExp(`^ *${escapeRegExp(lineComment)}(?: |$)`, "gm"),
-          ""
+          "",
         ),
         start: match.index,
         length: match[0].length,
@@ -473,9 +484,9 @@ function detectComments(
   if (blockCommentStart && blockCommentEnd) {
     const blockCommentRegex = new RegExp(
       `(?<=${escapeRegExp(
-        blockCommentStart
+        blockCommentStart,
       )})[\\s\\S]*?(?=${escapeRegExp(blockCommentEnd)})`,
-      "g"
+      "g",
     )
     log("blockCommentRegex", blockCommentRegex)
     let match
