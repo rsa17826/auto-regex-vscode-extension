@@ -23,7 +23,7 @@ function getlang(
   editor: vscode.TextEditor | undefined = vscode.window
     .activeTextEditor,
 ) {
-  if (!editor) return "" // Return empty instead of showing a message to avoid popups in background tasks
+  if (!editor) return ""
   // if (!editor) {
   //   vscode.window.showInformationMessage(
   //     "No active editor found. Please open a file.",
@@ -304,6 +304,13 @@ export function activate(context: vscode.ExtensionContext) {
         log(fileMatchRequirement, document.uri.fsPath)
         try {
           var regex = new RegExp(startreg, flags)
+          if (untilfail && "".replace(regex, "TEMP") === "TEMP") {
+            showError(
+              name,
+              `Regex /${startreg}/ matches empty strings. 'untilfail' disabled to prevent freeze.`,
+            )
+            untilfail = false
+          }
         } catch (e: any) {
           mode = "inactive"
           showError(
@@ -411,7 +418,6 @@ function detectComments(
   text: string,
   LANG: string | null = getlang(),
 ): { match: string; start: number; length: number }[] {
-  if (!LANG) return [] // 🛑 FIX: If no language is detected, don't try to regex comments
   const comments = []
   text = text
     // .replaceAll("\\\\", "\\")
