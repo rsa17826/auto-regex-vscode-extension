@@ -276,7 +276,10 @@ export function activate(context: vscode.ExtensionContext) {
         regexFileContents = decoder.decode(buffer)
         for (var part of detectComments(regexFileContents, null))
           tokens.push(...gettoken(part))
-        for (var part of detectComments(await getGlobalSettings(), null))
+        for (var part of detectComments(
+          await getGlobalSettings(),
+          null,
+        ))
           tokens.push(...gettoken(part))
       } catch (err) {
         log("Unable to read replace.regex", err)
