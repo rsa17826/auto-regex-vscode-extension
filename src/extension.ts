@@ -192,23 +192,16 @@ export function activate(context: vscode.ExtensionContext) {
 
   async function getGlobalSettings() {
     try {
-      log(settingsDir, "settingsDir")
-      try {
-        const buffer = await fs.readFile(globalRegexFilePath)
-        const decoder = new TextDecoder("utf-8")
-        return decoder.decode(buffer)
-      } catch (err) {
-        fs.writeFile(globalRegexFilePath, new Uint8Array())
-        log("Unable to read global replace.regex", err)
-      }
-    } catch (error) {
-      console.error("Failed to read file:", error)
-      return ""
+      const buffer = await fs.readFile(globalRegexFilePath)
+      const decoder = new TextDecoder("utf-8")
+      return decoder.decode(buffer)
+    } catch (err) {
+      fs.writeFile(globalRegexFilePath, new Uint8Array())
+      log("Unable to read global replace.regex", err)
     }
     return ""
   }
 
-  log(getGlobalSettings())
   const selfSaved: SelfSaved = {}
   async function modifyText(
     text: string,
@@ -282,6 +275,8 @@ export function activate(context: vscode.ExtensionContext) {
         const decoder = new TextDecoder("utf-8")
         regexFileContents = decoder.decode(buffer)
         for (var part of detectComments(regexFileContents, null))
+          tokens.push(...gettoken(part))
+        for (var part of detectComments(await getGlobalSettings(), null))
           tokens.push(...gettoken(part))
       } catch (err) {
         log("Unable to read replace.regex", err)
