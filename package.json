@@ -13,20 +13,11 @@
     "Other"
   ],
   "contributes": {
-    "menus": {
-      "editor/title": [
-        {
-          "command": "autoRegex.openRegexFile",
-          "group": "navigation",
-          "when": "inSettingsEditor || resourceScheme == 'vscode-userdata' || inSettingsJSONEditor"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "autoRegex.openRegexFile",
-        "title": "Open Replace Regex",
-        "icon": "$(regex)"
+        "icon": "$(regex)",
+        "title": "Open Replace Regex"
       },
       {
         "command": "autoRegex.applyRegexesToAllFiles",
@@ -75,7 +66,16 @@
         ],
         "id": "regex"
       }
-    ]
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "autoRegex.openRegexFile",
+          "group": "navigation",
+          "when": "inSettingsEditor || resourceScheme == 'vscode-userdata' || inSettingsJSONEditor"
+        }
+      ]
+    }
   },
   "dependencies": {
     "@types/vscode": "^1.91.0",
@@ -108,5 +108,5 @@
     "vscode:prepublish": "npm run compile",
     "watch": "tsc -watch -p ./"
   },
-  "version": "51.0.0"
+  "version": "52.0.0"
 }
