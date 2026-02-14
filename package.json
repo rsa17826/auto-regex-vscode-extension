@@ -13,7 +13,21 @@
     "Other"
   ],
   "contributes": {
+    "menus": {
+      "editor/title": [
+        {
+          "command": "autoRegex.openRegexFile",
+          "group": "navigation",
+          "when": "activeEditor == 'workbench.editors.settings' || resourceScheme == 'vscode-userdata'"
+        }
+      ]
+    },
     "commands": [
+      {
+        "command": "autoRegex.openRegexFile",
+        "title": "Open Replace Regex",
+        "icon": "$(edit)"
+      },
       {
         "command": "autoRegex.applyRegexesToAllFiles",
         "title": "apply regexes to all files"

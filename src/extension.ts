@@ -135,7 +135,14 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
   }
-
+  const settingsDir = path.resolve(
+    context.globalStorageUri.fsPath,
+    "..",
+    "..",
+  )
+  const globalRegexFilePath = vscode.Uri.file(
+    path.join(settingsDir, "replace.regex"),
+  )
   const activeMessages = new Map()
 
   function showError(messageName: string, message: string) {
@@ -162,6 +169,46 @@ export function activate(context: vscode.ExtensionContext) {
     [key: string]: any
   }
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "autoRegex.openRegexFile",
+      async () => {
+        const content = await getGlobalSettings()
+
+        if (content !== null) {
+          await vscode.window.showTextDocument(
+            await vscode.workspace.openTextDocument(
+              globalRegexFilePath,
+            ),
+          )
+        } else {
+          vscode.window.showErrorMessage(
+            "Could not find replace.regex file.",
+          )
+        }
+      },
+    ),
+  )
+
+  async function getGlobalSettings() {
+    try {
+      log(settingsDir, "settingsDir")
+      try {
+        const buffer = await fs.readFile(globalRegexFilePath)
+        const decoder = new TextDecoder("utf-8")
+        return decoder.decode(buffer)
+      } catch (err) {
+        fs.writeFile(globalRegexFilePath, new Uint8Array())
+        log("Unable to read global replace.regex", err)
+      }
+    } catch (error) {
+      console.error("Failed to read file:", error)
+      return ""
+    }
+    return ""
+  }
+
+  log(getGlobalSettings())
   const selfSaved: SelfSaved = {}
   async function modifyText(
     text: string,
