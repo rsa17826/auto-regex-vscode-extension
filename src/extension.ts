@@ -503,7 +503,19 @@ function detectComments(
       lineComment = ""
       break
   }
-
+  if (LANG === null) {
+    const blockCommentRegex = new RegExp(`(^(?!\n).*$\n)+$`, "gm")
+    log("blockCommentRegex", blockCommentRegex)
+    let match
+    while ((match = blockCommentRegex.exec(text)) !== null) {
+      comments.push({
+        match: match[0],
+        length: match[0].length,
+        start: match.index,
+      })
+    }
+    return comments
+  }
   if (lineComment !== undefined) {
     const lineCommentRegex = new RegExp(
       `^( *)(?:${escapeRegExp(lineComment)}$|${escapeRegExp(
