@@ -9,6 +9,7 @@
     "onLanguage:gdscript",
     "onLanguage:regex"
   ],
+  "version": "53.0.0",
   "categories": [
     "Other"
   ],
@@ -107,6 +108,5 @@
     "test": "vscode-test",
     "vscode:prepublish": "npm run compile",
     "watch": "tsc -watch -p ./"
-  },
-  "version": "52.0.0"
+  }
 }
