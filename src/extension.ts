@@ -47,27 +47,29 @@ function getlang(
   const cursorPosition = editor.selection.active
   const thisLine = cursorPosition.line
   var fulltext = document.getText().replaceAll("\r\n", "\n")
-  const scriptMatches = fulltext.matchAll(
-    /(?<=<script\b[^>]*>)([\s\S]*?)(?=<\/script>)/g,
-  )
-  let isThisLineInsideScriptTag = false
-  for (const match of scriptMatches) {
-    const matchStartPosition = document.positionAt(match.index)
-    const matchEndPosition = document.positionAt(
-      match.index + match[1].length,
-    )
-    const matchEndLine = document.lineAt(matchEndPosition).lineNumber
-    if (
-      thisLine >= matchStartPosition.line &&
-      thisLine <= matchEndLine
-    ) {
-      isThisLineInsideScriptTag = true
-      break
-    }
-  }
   var langid = document.languageId
-  if (langid == "html" && isThisLineInsideScriptTag)
-    langid = "javascript"
+  if (langid == "html") {
+    const scriptMatches = fulltext.matchAll(
+      /(?<=<script\b[^>]*>)([\s\S]*?)(?=<\/script>)/g,
+    )
+    let isThisLineInsideScriptTag = false
+    for (const match of scriptMatches) {
+      const matchStartPosition = document.positionAt(match.index)
+      const matchEndPosition = document.positionAt(
+        match.index + match[1].length,
+      )
+      const matchEndLine =
+        document.lineAt(matchEndPosition).lineNumber
+      if (
+        thisLine >= matchStartPosition.line &&
+        thisLine <= matchEndLine
+      ) {
+        isThisLineInsideScriptTag = true
+        break
+      }
+    }
+    if (isThisLineInsideScriptTag) langid = "javascript"
+  }
   return langid
 }
 export function activate(context: vscode.ExtensionContext) {
