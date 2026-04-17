@@ -449,6 +449,7 @@ export function activate(context: vscode.ExtensionContext) {
           )
           name = "unnamed regex"
           mode = "inactive"
+          fileMatchRequirement = undefined
           continue
         }
         log(fileMatchRequirement, document.uri.fsPath)
@@ -514,6 +515,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
         name = "unnamed regex"
         mode = "inactive"
+        fileMatchRequirement = undefined
       }
     }
     return newText
