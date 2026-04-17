@@ -81,7 +81,12 @@ export function activate(context: vscode.ExtensionContext) {
           log(comments)
           let text = document.getText().replaceAll("\r\n", "\n")
 
-          let newText = await modifyText(text, comments, document)
+          let newText = await modifyText(
+            text,
+            comments,
+            document,
+            diagnosticCollection,
+          )
 
           if (newText !== document.getText()) {
             const edit = vscode.TextEdit.replace(
@@ -143,6 +148,10 @@ export function activate(context: vscode.ExtensionContext) {
   const globalRegexFilePath = vscode.Uri.file(
     path.join(settingsDir, "replace.regex"),
   )
+  const diagnosticCollection =
+    vscode.languages.createDiagnosticCollection("auto-regex")
+  context.subscriptions.push(diagnosticCollection)
+
   const activeMessages = new Map()
 
   function showError(messageName: string, message: string) {
@@ -207,7 +216,9 @@ export function activate(context: vscode.ExtensionContext) {
     text: string,
     comments: { match: string; start: number; length: number }[],
     document: vscode.TextDocument,
+    diagnosticCollection: vscode.DiagnosticCollection,
   ): Promise<string> {
+    diagnosticCollection.delete(document.uri)
     let mode = "inactive"
     let startreg = ""
     let replace = ""
@@ -287,6 +298,8 @@ export function activate(context: vscode.ExtensionContext) {
     var untilfail: boolean = false
     var full: boolean = false
     var fileMatchRequirement: string | undefined
+    var diagSeverity: vscode.DiagnosticSeverity | undefined
+    var diagMessage: string = ""
     var regCounter = 0
     for (const { token, value, end } of tokens) {
       if (token == "noregex") break
@@ -320,10 +333,58 @@ export function activate(context: vscode.ExtensionContext) {
         untilfail = false
         full = false
         startreg = value
-      } else if (mode === "started" && token == "replace") {
+      } else if (mode === "started" && token === "replace") {
         mode = "replacing"
         replace = value
-      } else if (mode === "replacing" && token == "endregex") {
+      } else if (
+        mode === "started" &&
+        (token === "info" || token === "warn" || token === "error")
+      ) {
+        mode = "diagnosing"
+        diagMessage = value
+        diagSeverity =
+          token === "info" ? vscode.DiagnosticSeverity.Information
+          : token === "warn" ? vscode.DiagnosticSeverity.Warning
+          : vscode.DiagnosticSeverity.Error
+      } else if (mode === "diagnosing" && token === "endregex") {
+        try {
+          var diagRegex = new RegExp(
+            startreg,
+            flags.replace("g", "") + "g",
+          )
+          var searchOffset = full ? 0 : end
+          var searchText = full ? newText : newText.substring(end)
+          var newDiagnostics: vscode.Diagnostic[] = []
+          for (const match of searchText.matchAll(diagRegex)) {
+            const startPos = document.positionAt(
+              searchOffset + match.index!,
+            )
+            const endPos = document.positionAt(
+              searchOffset + match.index! + match[0].length,
+            )
+            newDiagnostics.push(
+              new vscode.Diagnostic(
+                new vscode.Range(startPos, endPos),
+                diagMessage || name,
+                diagSeverity,
+              ),
+            )
+          }
+          diagnosticCollection.set(document.uri, [
+            ...(diagnosticCollection.get(document.uri) ?? []),
+            ...newDiagnostics,
+          ])
+        } catch (e: any) {
+          showError(
+            name,
+            `@error ${name}\n/${startreg}/${flags}\n${e.message}`,
+          )
+        }
+        name = "unnamed regex"
+        mode = "inactive"
+        diagSeverity = undefined
+        diagMessage = ""
+      } else if (mode === "replacing" && token === "endregex") {
         // startreg = startreg.replaceAll("\\\\", "\\")
         regCounter++
         if (
@@ -419,8 +480,12 @@ export function activate(context: vscode.ExtensionContext) {
     const comments = detectComments(document.getText())
     log(comments)
     let text = document.getText()
-    let newText = await modifyText(text, comments, document)
-
+    let newText = await modifyText(
+      text,
+      comments,
+      document,
+      diagnosticCollection,
+    )
     if (newText !== text) {
       const edit = new vscode.WorkspaceEdit()
       edit.replace(
