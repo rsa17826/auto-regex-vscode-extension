@@ -107,7 +107,7 @@
         {
           "begin": "(?:// |; |# |^ *)@error(?: |$)",
           "end": "$",
-          "name": "regex.tag.errortag",
+          "name": "regex.tag.error",
           "patterns": [
             {
               "match": ".",
