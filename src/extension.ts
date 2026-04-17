@@ -347,15 +347,38 @@ export function activate(context: vscode.ExtensionContext) {
           : token === "warn" ? vscode.DiagnosticSeverity.Warning
           : vscode.DiagnosticSeverity.Error
       } else if (mode === "diagnosing" && token === "endregex") {
-        try {
-          var diagRegex = new RegExp(
-            startreg,
-            flags.replace("g", "") + "g",
+        // startreg = startreg.replaceAll("\\\\", "\\")
+        regCounter++
+        if (
+          fileMatchRequirement &&
+          !new RegExp(fileMatchRequirement, "i").test(
+            document.uri.fsPath.replaceAll("\\", "/"),
           )
-          var searchOffset = full ? 0 : end
-          var searchText = full ? newText : newText.substring(end)
+        ) {
+          warn(
+            "fileMatchRequirement",
+            fileMatchRequirement,
+            "does not match the current file",
+            document.uri.fsPath,
+          )
+          name = "unnamed regex"
+          mode = "inactive"
+          continue
+        }
+        log(fileMatchRequirement, document.uri.fsPath)
+        try {
+          if (
+            document.uri.fsPath.replace("\\", "/") !==
+              regFilePath.replace("\\", "/") &&
+            regCounter > fileRegStartIdx
+          )
+            full = true
+          var textAfterEnd = full ? newText : newText.substring(end)
+
+          var regex = new RegExp(startreg, flags)
           var newDiagnostics: vscode.Diagnostic[] = []
-          for (const match of searchText.matchAll(diagRegex)) {
+          var searchOffset = full ? 0 : end
+          for (const match of textAfterEnd.matchAll(regex)) {
             const startPos = document.positionAt(
               searchOffset + match.index!,
             )
@@ -365,7 +388,7 @@ export function activate(context: vscode.ExtensionContext) {
             newDiagnostics.push(
               new vscode.Diagnostic(
                 new vscode.Range(startPos, endPos),
-                diagMessage || name,
+                match[0].replace(regex, diagMessage) || name,
                 diagSeverity,
               ),
             )
@@ -375,11 +398,15 @@ export function activate(context: vscode.ExtensionContext) {
             ...newDiagnostics,
           ])
         } catch (e: any) {
+          mode = "inactive"
           showError(
             name,
             `@error ${name}\n/${startreg}/${flags}\n${e.message}`,
           )
+          error(`@error ${name}: /${startreg}/${flags}\n`, e.message)
+          continue
         }
+
         name = "unnamed regex"
         mode = "inactive"
         diagSeverity = undefined
