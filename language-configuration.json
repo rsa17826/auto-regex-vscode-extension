@@ -1,2 +1,21 @@
 {
+  "comments": {
+    "lineComment": { "comment": "!" }
+  },
+  "autoClosingPairs": [
+    { "open": "{", "close": "}" },
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" }
+  ],
+  "surroundingPairs": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"]
+  ],
+  "folding": {
+    "markers": {
+      "start": "(?![\\n\\r])@(name)",
+      "end": "^@endregex"
+    }
+  }
 }
