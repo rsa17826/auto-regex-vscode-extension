@@ -19,6 +19,19 @@ declare global {
   function info(...args: any[]): void
   function clear(...args: any[]): void
 }
+const cache = new Map<string, string>()
+
+function regrep(a: string, s: RegExp, d: string) {
+  const key = a + "||" + s.source + "||" + s.flags + "||" + d
+
+  if (cache.has(key)) {
+    return cache.get(key)!
+  }
+
+  const result = a.replace(s, d)
+  cache.set(key, result)
+  return result
+}
 function getlang(
   editor: vscode.TextEditor | undefined = vscode.window
     .activeTextEditor,
@@ -379,16 +392,20 @@ export function activate(context: vscode.ExtensionContext) {
           var newDiagnostics: vscode.Diagnostic[] = []
           var searchOffset = full ? 0 : end
           for (const match of textAfterEnd.matchAll(regex)) {
+            const crlfCount = (
+              text.slice(0, match.index).match(/\n/g) || []
+            ).length
+            const correctedIndex = match.index + crlfCount
             const startPos = document.positionAt(
-              searchOffset + match.index!,
+              searchOffset + correctedIndex!,
             )
             const endPos = document.positionAt(
-              searchOffset + match.index! + match[0].length,
+              searchOffset + correctedIndex! + match[0].length,
             )
             newDiagnostics.push(
               new vscode.Diagnostic(
                 new vscode.Range(startPos, endPos),
-                match[0].replace(regex, diagMessage) || name,
+                regrep(match[0], regex, diagMessage) || name,
                 diagSeverity,
               ),
             )
