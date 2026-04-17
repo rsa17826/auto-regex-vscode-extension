@@ -19,17 +19,26 @@ declare global {
   function info(...args: any[]): void
   function clear(...args: any[]): void
 }
-const cache = new Map<string, string>()
+const regexCache = new Map<string, string>()
+const tokenCache = new Map<
+  string,
+  {
+    token: string
+    value: string
+    string: string
+    end: any
+  }[]
+>()
 
 function regrep(a: string, s: RegExp, d: string) {
   const key = a + "||" + s.source + "||" + s.flags + "||" + d
 
-  if (cache.has(key)) {
-    return cache.get(key)!
+  if (regexCache.has(key)) {
+    return regexCache.get(key)!
   }
 
   const result = a.replace(s, d)
-  cache.set(key, result)
+  regexCache.set(key, result)
   return result
 }
 function getlang(
@@ -101,6 +110,7 @@ export function activate(context: vscode.ExtensionContext) {
             comments,
             document,
             diagnosticCollection,
+            false,
           )
 
           if (newText !== document.getText()) {
@@ -232,6 +242,7 @@ export function activate(context: vscode.ExtensionContext) {
     comments: { match: string; start: number; length: number }[],
     document: vscode.TextDocument,
     diagnosticCollection: vscode.DiagnosticCollection,
+    noReplace: boolean = false,
   ): Promise<string> {
     diagnosticCollection.delete(document.uri)
     let mode = "inactive"
@@ -262,6 +273,12 @@ export function activate(context: vscode.ExtensionContext) {
       string: string
       end: any
     }[] {
+      const key = match + "||" + start + "||" + length
+
+      if (tokenCache.has(key)) {
+        return tokenCache.get(key)!
+      }
+
       var strs = match
         .replaceAll("ƒ", "")
         // .replaceAll("\\", "☺")
@@ -276,7 +293,7 @@ export function activate(context: vscode.ExtensionContext) {
             temparr.push(temparr.pop() + "\n" + str)
         }
       }
-      return temparr.map((e) => {
+      var result = temparr.map((e) => {
         // log(e, e.match(/^@\w+ ([^]*)$/)?.[1])
         return {
           token: e.match(/^@(\w+)/)?.[1] ?? "",
@@ -285,6 +302,8 @@ export function activate(context: vscode.ExtensionContext) {
           end: start + length,
         }
       })
+      tokenCache.set(key, result)
+      return result
     }
     // clear()
     var tokens = []
@@ -433,6 +452,12 @@ export function activate(context: vscode.ExtensionContext) {
         diagSeverity = undefined
         diagMessage = ""
       } else if (mode === "replacing" && token === "endregex") {
+        if (noReplace) {
+          name = "unnamed regex"
+          mode = "inactive"
+          fileMatchRequirement = undefined
+          continue
+        }
         // startreg = startreg.replaceAll("\\\\", "\\")
         regCounter++
         if (
@@ -520,7 +545,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
     return newText
   }
-  async function applyRegex(document: vscode.TextDocument) {
+  async function applyRegex(
+    document: vscode.TextDocument,
+    noReplace = false,
+  ) {
     const uriString = document.uri.toString()
     if (selfSaved[uriString]) {
       delete selfSaved[uriString]
@@ -535,8 +563,9 @@ export function activate(context: vscode.ExtensionContext) {
       comments,
       document,
       diagnosticCollection,
+      noReplace,
     )
-    if (newText !== text) {
+    if (!noReplace && newText !== text) {
       const edit = new vscode.WorkspaceEdit()
       edit.replace(
         document.uri,
@@ -558,16 +587,57 @@ export function activate(context: vscode.ExtensionContext) {
       })
     }
   }
-  const disposable = vscode.workspace.onDidSaveTextDocument(
-    (document) => {
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument((document) => {
       // 🛑 FIX: Prevent the regex logic from running on the settings file
       if (document.uri.scheme !== "file") {
         return
       }
       applyRegex(document)
-    },
+    }),
   )
-  context.subscriptions.push(disposable)
+  const pending = new Map<string, NodeJS.Timeout>()
+
+  context.subscriptions.push(
+    ...[
+      vscode.workspace.onDidChangeTextDocument,
+      vscode.workspace.onDidOpenTextDocument,
+      vscode.window.onDidChangeActiveTextEditor,
+    ].map((e) =>
+      e((event) => {
+        function getDocument(
+          event:
+            | vscode.TextDocument
+            | vscode.TextEditor
+            | vscode.TextDocumentChangeEvent
+            | undefined,
+        ): vscode.TextDocument | undefined {
+          if (!event) return undefined
+
+          if ("document" in event) {
+            return event.document
+          }
+
+          return event
+        }
+        let document = getDocument(event)
+        if (!document || document.uri.scheme !== "file") return
+        const uri = document.uri.toString()
+
+        if (pending.has(uri)) {
+          clearTimeout(pending.get(uri)!)
+        }
+
+        pending.set(
+          uri,
+          setTimeout(async () => {
+            pending.delete(uri)
+            await applyRegex(document, true)
+          }, 300), // 200-500ms is typical
+        )
+      }),
+    ),
+  )
 }
 
 function detectComments(
