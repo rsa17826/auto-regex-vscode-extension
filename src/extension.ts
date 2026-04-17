@@ -83,6 +83,12 @@ function getlang(
 }
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
+    vscode.languages.registerFoldingRangeProvider(
+      { pattern: "**/*" },
+      new CustomFoldingProvider(),
+    ),
+  )
+  context.subscriptions.push(
     vscode.languages.registerDocumentRangeFormattingEditProvider(
       "*",
       {
@@ -751,3 +757,29 @@ function escapeRegExp(string: string): string {
 }
 
 export function deactivate() {}
+
+class CustomFoldingProvider implements vscode.FoldingRangeProvider {
+  provideFoldingRanges(
+    document: vscode.TextDocument,
+  ): vscode.FoldingRange[] {
+    const blocks: vscode.FoldingRange[] = []
+    var start = -1
+    for (let i = 0; i < document.lineCount; i++) {
+      const line = document.lineAt(i).text
+
+      if (line.startsWith("@name") && start == -1) {
+        start = i
+      }
+
+      if (
+        line.startsWith("@endregex") &&
+        !document.lineAt(i + 1).text.startsWith("@")
+      ) {
+        blocks.push(new vscode.FoldingRange(start, i))
+        start = -1
+      }
+    }
+
+    return blocks
+  }
+}
