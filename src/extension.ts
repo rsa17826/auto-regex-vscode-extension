@@ -391,10 +391,12 @@ export function activate(context: vscode.ExtensionContext) {
           var regex = new RegExp(startreg, flags)
           var newDiagnostics: vscode.Diagnostic[] = []
           var searchOffset = full ? 0 : end
+          const hasbr = text.includes("\r")
           for (const match of textAfterEnd.matchAll(regex)) {
-            const crlfCount = (
-              text.slice(0, match.index).match(/\n/g) || []
-            ).length
+            const crlfCount =
+              hasbr ? 0 : (
+                (text.slice(0, match.index).match(/\n/g) || []).length
+              )
             const correctedIndex = match.index + crlfCount
             const startPos = document.positionAt(
               searchOffset + correctedIndex!,
@@ -450,7 +452,7 @@ export function activate(context: vscode.ExtensionContext) {
         log(fileMatchRequirement, document.uri.fsPath)
         try {
           var regex = new RegExp(startreg, flags)
-          if (untilfail && "".replace(regex, "TEMP") === "TEMP") {
+          if (untilfail && regrep("", regex, "TEMP") === "TEMP") {
             showError(
               name,
               `Regex /${startreg}/ matches empty strings. 'untilfail' disabled to prevent freeze.`,
@@ -484,11 +486,11 @@ export function activate(context: vscode.ExtensionContext) {
               "replacing...",
               [regex, replace],
             )
-            if (full) newText = newText.replace(regex, replace)
+            if (full) newText = regrep(newText, regex, replace)
             else
               newText =
                 newText.substring(0, end) +
-                (textAfterEnd = textAfterEnd.replace(regex, replace))
+                (textAfterEnd = regrep(textAfterEnd, regex, replace))
             // warn("newText", newText)
             if (i > 3000) {
               error("too many replacements")
@@ -671,7 +673,7 @@ function detectComments(
 }
 
 function escapeRegExp(string: string): string {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return regrep(string, /[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 export function deactivate() {}
