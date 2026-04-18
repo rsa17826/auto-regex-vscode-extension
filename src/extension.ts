@@ -728,7 +728,7 @@ function detectComments(
     for (var match of [...text.matchAll(lineCommentRegex)]) {
       lastidx += lineComment.length + 1 + match[0].length
       comments.push({
-        match: string(match[0]).replaceAll(
+        match: String(match[0]).replaceAll(
           new RegExp(`^ *${escapeRegExp(lineComment)}(?: |$)`, "gm"),
           "",
         ),
