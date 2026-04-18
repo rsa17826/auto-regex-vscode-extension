@@ -312,7 +312,10 @@ export function activate(context: vscode.ExtensionContext) {
       return result
     }
     // clear()
-    var tokens = []
+    var tokens: (
+      | { token: string; value: string; end: number }
+      | { token: "!reset"; value: undefined; end: undefined }
+    )[] = []
     for (var comment of comments) tokens.push(...gettoken(comment))
     var fileRegStartIdx = tokens.length
     error(tokens, "tokens")
@@ -332,7 +335,11 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
     for (var part of detectComments(await getGlobalSettings(), null))
-      tokens.push(...gettoken(part))
+      tokens.push(...gettoken(part), {
+        token: "!reset",
+        value: undefined,
+        end: undefined,
+      })
     var flags: string = "gm"
     var name: string = "unnamed regex"
     var untilfail: boolean = false
@@ -342,6 +349,11 @@ export function activate(context: vscode.ExtensionContext) {
     var diagMessage: string = ""
     var regCounter = 0
     for (const { token, value, end } of tokens) {
+      if (token === "!reset" && value === undefined) {
+        fileMatchRequirement = undefined
+        name = "unnamed regex"
+        continue
+      }
       if (token == "noregex") break
       if (
         (mode == "replacing" || mode == "started") &&
@@ -401,7 +413,6 @@ export function activate(context: vscode.ExtensionContext) {
             "does not match the current file",
             document.uri.fsPath,
           )
-          name = "unnamed regex"
           mode = "inactive"
           continue
         }
@@ -452,8 +463,6 @@ export function activate(context: vscode.ExtensionContext) {
           error(`@error ${name}: /${startreg}/${flags}\n`, e.message)
           continue
         }
-
-        name = "unnamed regex"
         mode = "inactive"
         diagSeverity = undefined
         diagMessage = ""
@@ -461,7 +470,6 @@ export function activate(context: vscode.ExtensionContext) {
         if (noReplace) {
           name = "unnamed regex"
           mode = "inactive"
-          fileMatchRequirement = undefined
           continue
         }
         // startreg = startreg.replaceAll("\\\\", "\\")
@@ -480,7 +488,6 @@ export function activate(context: vscode.ExtensionContext) {
           )
           name = "unnamed regex"
           mode = "inactive"
-          fileMatchRequirement = undefined
           continue
         }
         log(fileMatchRequirement, document.uri.fsPath)
@@ -721,7 +728,7 @@ function detectComments(
     for (var match of [...text.matchAll(lineCommentRegex)]) {
       lastidx += lineComment.length + 1 + match[0].length
       comments.push({
-        match: String(match[0]).replaceAll(
+        match: string(match[0]).replaceAll(
           new RegExp(`^ *${escapeRegExp(lineComment)}(?: |$)`, "gm"),
           "",
         ),
