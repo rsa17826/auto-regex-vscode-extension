@@ -312,7 +312,10 @@ export function activate(context: vscode.ExtensionContext) {
       return result
     }
     // clear()
-    var tokens = []
+    var tokens: (
+      | { token: string; value: string; end: number }
+      | { token: "!reset"; value: undefined; end: undefined }
+    )[] = []
     for (var comment of comments) tokens.push(...gettoken(comment))
     var fileRegStartIdx = tokens.length
     error(tokens, "tokens")
@@ -332,7 +335,11 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
     for (var part of detectComments(await getGlobalSettings(), null))
-      tokens.push(...gettoken(part))
+      tokens.push(...gettoken(part), {
+        token: "!reset",
+        value: undefined,
+        end: undefined,
+      })
     var flags: string = "gm"
     var name: string = "unnamed regex"
     var untilfail: boolean = false
@@ -341,7 +348,13 @@ export function activate(context: vscode.ExtensionContext) {
     var diagSeverity: vscode.DiagnosticSeverity | undefined
     var diagMessage: string = ""
     var regCounter = 0
+    var errgroup = 0
     for (const { token, value, end } of tokens) {
+      if (token === "!reset" && value === undefined) {
+        fileMatchRequirement = undefined
+        name = "unnamed regex"
+        continue
+      }
       if (token == "noregex") break
       if (
         (mode == "replacing" || mode == "started") &&
@@ -386,6 +399,8 @@ export function activate(context: vscode.ExtensionContext) {
           token === "info" ? vscode.DiagnosticSeverity.Information
           : token === "warn" ? vscode.DiagnosticSeverity.Warning
           : vscode.DiagnosticSeverity.Error
+      } else if (mode === "diagnosing" && token === "errgroup") {
+        errgroup = Number(value)
       } else if (mode === "diagnosing" && token === "endregex") {
         // startreg = startreg.replaceAll("\\\\", "\\")
         regCounter++
@@ -401,7 +416,6 @@ export function activate(context: vscode.ExtensionContext) {
             "does not match the current file",
             document.uri.fsPath,
           )
-          name = "unnamed regex"
           mode = "inactive"
           continue
         }
@@ -415,26 +429,37 @@ export function activate(context: vscode.ExtensionContext) {
             full = true
           var textAfterEnd = full ? newText : newText.substring(end)
 
-          var regex = new RegExp(startreg, flags)
+          var regex = new RegExp(
+            startreg,
+            flags.replace("d", "") + "d",
+          )
           var newDiagnostics: vscode.Diagnostic[] = []
           var searchOffset = full ? 0 : end
           const hasbr = text.includes("\r")
           for (const match of textAfterEnd.matchAll(regex)) {
+            var [startidx, endidx] = match.indices![errgroup]
             const crlfCount =
-              hasbr ? 0 : (
-                (text.slice(0, match.index).match(/\n/g) || []).length
-              )
-            const correctedIndex = match.index + crlfCount
+              hasbr ?
+                (text.slice(0, startidx).match(/\n/g) || []).length
+              : 0
+            const correctedIndex = startidx + crlfCount
             const startPos = document.positionAt(
               searchOffset + correctedIndex!,
             )
-            const endPos = document.positionAt(
-              searchOffset + correctedIndex! + match[0].length,
+            const endPos = document.positionAt(searchOffset + endidx)
+            const newDiagMessage = diagMessage.replace(
+              /(?<!\w)!ln\.(\d)(?!\w)/g,
+              (_, ln) => {
+                const lineNumber = text
+                  .slice(0, match.indices![Number(ln)][0])
+                  .split('\n').length
+                return lineNumber.toString()
+              },
             )
             newDiagnostics.push(
               new vscode.Diagnostic(
                 new vscode.Range(startPos, endPos),
-                regrep(match[0], regex, diagMessage) || name,
+                regrep(match[0], regex, newDiagMessage) || name,
                 diagSeverity,
               ),
             )
@@ -452,16 +477,14 @@ export function activate(context: vscode.ExtensionContext) {
           error(`@error ${name}: /${startreg}/${flags}\n`, e.message)
           continue
         }
-
-        name = "unnamed regex"
         mode = "inactive"
+        errgroup = 0
         diagSeverity = undefined
         diagMessage = ""
       } else if (mode === "replacing" && token === "endregex") {
         if (noReplace) {
           name = "unnamed regex"
           mode = "inactive"
-          fileMatchRequirement = undefined
           continue
         }
         // startreg = startreg.replaceAll("\\\\", "\\")
@@ -480,7 +503,6 @@ export function activate(context: vscode.ExtensionContext) {
           )
           name = "unnamed regex"
           mode = "inactive"
-          fileMatchRequirement = undefined
           continue
         }
         log(fileMatchRequirement, document.uri.fsPath)
@@ -595,7 +617,6 @@ export function activate(context: vscode.ExtensionContext) {
   }
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((document) => {
-      // 🛑 FIX: Prevent the regex logic from running on the settings file
       if (document.uri.scheme !== "file") {
         return
       }
