@@ -695,16 +695,23 @@ function detectComments(
       break
   }
   if (LANG === null) {
-    const blockCommentRegex = new RegExp(`(^(?!\n).*$\n)+$`, "gm")
+    const blockCommentRegex = /(?:^(?!\s*$).+\n?)+/gm
     log("blockCommentRegex", blockCommentRegex)
     let match
-    while ((match = blockCommentRegex.exec(text)) !== null) {
-      comments.push({
-        match: match[0],
-        length: match[0].length,
-        start: match.index,
-      })
-    }
+    // while ((match = blockCommentRegex.exec(text + "\n")) !== null) {
+
+    comments.push(
+      ...[...(text + "\n").matchAll(/(?:^(?!\s*$).+\n?)+/gm)].map(
+        (match) => {
+          return {
+            match: match[0],
+            length: match[0].length,
+            start: match.index,
+          }
+        },
+      ),
+    )
+    // }
     return comments
   }
   if (lineComment !== undefined) {
