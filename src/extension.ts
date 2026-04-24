@@ -1,11 +1,3 @@
-// @name remove ai comments
-// @regex \n *(//) [A-Z].*
-// @replace
-// @endregex
-// @regex  (//) [A-Z].*
-// @replace
-// @endregex
-
 import * as vscode from "vscode"
 const fs = vscode.workspace.fs
 import * as afs from "fs"
@@ -452,7 +444,7 @@ export function activate(context: vscode.ExtensionContext) {
               (_, ln) => {
                 const lineNumber = text
                   .slice(0, match.indices![Number(ln)][0])
-                  .split('\n').length
+                  .split("\n").length
                 return lineNumber.toString()
               },
             )
@@ -663,6 +655,101 @@ export function activate(context: vscode.ExtensionContext) {
           }, 300), // 200-500ms is typical
         )
       }),
+    ),
+  )
+
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      { pattern: "**/*.regex" },
+      {
+        provideCompletionItems(document, position) {
+          // 1. Get the text of the document up to the cursor
+          const fullText = document.getText(
+            new vscode.Range(new vscode.Position(0, 0), position),
+          )
+
+          // 2. Helper to check what the "latest" tag is
+          const lastTag = (tag: string) => {
+            log(fullText.lastIndexOf(tag))
+            return fullText.lastIndexOf(tag)
+          }
+
+          const isAfterName =
+            lastTag("@name") > lastTag("@file") &&
+            lastTag("@name") > lastTag("@regex")
+          const isAfterFile = lastTag("@file") > lastTag("@regex")
+          const isAfterRegex = lastTag("@regex") > -1
+
+          function item(
+            label: string,
+            insert: string,
+            detail: string,
+            priority: string,
+          ) {
+            const c = new vscode.CompletionItem(
+              label,
+              vscode.CompletionItemKind.Keyword,
+            )
+            c.insertText = new vscode.SnippetString(insert)
+
+            c.sortText = `${priority}_${label}`
+
+            const md = new vscode.MarkdownString()
+            md.appendMarkdown(`Type: **${detail}**\n\n`)
+            md.appendCodeblock(label, "regex")
+            c.documentation = md
+            return c
+          }
+
+          // TODO make work fully how it should
+          // 3. Logic-based Sorting
+          let pName = "50",
+            pFile = "51",
+            pRegex = "52",
+            pSuffix = "53",
+            pEnd = "99"
+
+          if (
+            fullText.trim() === "" ||
+            lastTag("@endregex") > lastTag("@name")
+          ) {
+            pName = "01"
+          } else if (isAfterName) {
+            pFile = "01"
+            pRegex = "02"
+          } else if (isAfterFile) {
+            pRegex = "01"
+          } else if (isAfterRegex) {
+            pSuffix = "01"
+            pEnd = "02"
+          }
+
+          return [
+            item(
+              "@name",
+              "@name $0",
+              "Start a new regex block",
+              pName,
+            ),
+            item("@file", "@file $0", "File pattern (regex)", pFile),
+            item("@regex", "@regex $0", "Match pattern", pRegex),
+
+            item(
+              "@replace",
+              "@replace $0",
+              "Replacement string",
+              pSuffix,
+            ),
+            item("@flags", "@flags $0", "Regex flags", pSuffix),
+            item("@error", "@error $0", "Error message", pSuffix),
+            item("@warn", "@warn $0", "Warning message", pSuffix),
+            item("@info", "@info $0", "Info message", pSuffix),
+
+            item("@endregex", "@endregex", "End of block", pEnd),
+          ]
+        },
+      },
+      "@\n",
     ),
   )
 }
