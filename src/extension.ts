@@ -99,7 +99,10 @@ export function activate(context: vscode.ExtensionContext) {
             return []
           }
 
-          const comments = detectComments(document.getText())
+          const comments = detectComments(
+            document.getText(),
+            document.languageId,
+          )
           log(comments)
           let text = document.getText().replaceAll("\r\n", "\n")
 
@@ -575,7 +578,10 @@ export function activate(context: vscode.ExtensionContext) {
       return
     }
 
-    const comments = detectComments(document.getText())
+    const comments = detectComments(
+      document.getText(),
+      document.languageId,
+    )
     log(comments)
     let text = document.getText()
     let newText = await modifyText(
@@ -807,7 +813,6 @@ function detectComments(
     log("blockCommentRegex", blockCommentRegex)
     let match
     // while ((match = blockCommentRegex.exec(text + "\n")) !== null) {
-
     comments.push(
       ...[...(text + "\n").matchAll(/(?:^(?!\s*$).+\n?)+/gm)].map(
         (match) => {
