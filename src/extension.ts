@@ -311,7 +311,27 @@ export function activate(context: vscode.ExtensionContext) {
       | { token: string; value: string; end: number }
       | { token: "!reset"; value: undefined; end: undefined }
     )[] = []
-    for (var comment of comments) tokens.push(...gettoken(comment))
+    function pushChunkTokens(chunk: {
+      match: string
+      start: number
+      length: number
+    }) {
+      // Only reset carried-over state (like @file) when the previous
+      // chunk ended with a completed @endregex — i.e. the blank line
+      // that split this chunk off is a real gap *between* blocks, not
+      // an incidental blank line sitting inside a block (e.g. right
+      // before @endregex).
+      const prevToken = tokens[tokens.length - 1]
+      if (prevToken && prevToken.token === "endregex") {
+        tokens.push({
+          token: "!reset",
+          value: undefined,
+          end: undefined,
+        })
+      }
+      tokens.push(...gettoken(chunk))
+    }
+    for (var comment of comments) pushChunkTokens(comment)
     var fileRegStartIdx = tokens.length
     error(tokens, "tokens")
     let regexFileContents: string
@@ -324,17 +344,13 @@ export function activate(context: vscode.ExtensionContext) {
         const decoder = new TextDecoder("utf-8")
         regexFileContents = decoder.decode(buffer)
         for (var part of detectComments(regexFileContents, null))
-          tokens.push(...gettoken(part))
+          pushChunkTokens(part)
       } catch (err) {
         log("Unable to read replace.regex", err)
       }
     }
     for (var part of detectComments(await getGlobalSettings(), null))
-      tokens.push(...gettoken(part), {
-        token: "!reset",
-        value: undefined,
-        end: undefined,
-      })
+      pushChunkTokens(part)
     var flags: string = "gm"
     var name: string = "unnamed regex"
     var untilfail: boolean = false
@@ -563,7 +579,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
         name = "unnamed regex"
         mode = "inactive"
-        fileMatchRequirement = undefined
       }
     }
     return newText
