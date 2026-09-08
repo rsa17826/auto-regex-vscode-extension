@@ -448,21 +448,33 @@ export function activate(context: vscode.ExtensionContext) {
           var searchOffset = full ? 0 : end
           const hasbr = text.includes("\r")
           for (const match of textAfterEnd.matchAll(regex)) {
-            var [startidx, endidx] = match.indices![errgroup]
+            const indices = match.indices?.[errgroup]
+            if (!indices) {
+              throw new Error(
+                `regex group ${errgroup} has no indices for match ${JSON.stringify(match[0])} — check errgroup in the "diagnosing" config`,
+              )
+            }
+            var [startidx, endidx] = indices
             const crlfCount =
               hasbr ?
                 (text.slice(0, startidx).match(/\n/g) || []).length
               : 0
             const correctedIndex = startidx + crlfCount
             const startPos = document.positionAt(
-              searchOffset + correctedIndex!,
+              searchOffset + correctedIndex,
             )
             const endPos = document.positionAt(searchOffset + endidx)
             const newDiagMessage = diagMessage.replace(
               /(?<!\w)!ln\.(\d)(?!\w)/g,
               (_, ln) => {
+                const groupIndices = match.indices![Number(ln)]
+                if (!groupIndices) {
+                  throw new Error(
+                    `regex group ${ln} referenced in "!ln.${ln}" has no indices for match ${JSON.stringify(match[0])}`,
+                  )
+                }
                 const lineNumber = text
-                  .slice(0, match.indices![Number(ln)][0])
+                  .slice(0, groupIndices[0])
                   .split("\n").length
                 return lineNumber.toString()
               },
