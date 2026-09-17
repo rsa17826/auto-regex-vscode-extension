@@ -432,12 +432,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
         log(fileMatchRequirement, document.uri.fsPath)
         try {
-          if (
-            document.uri.fsPath.replace("\\", "/") !==
-              regFilePath.replace("\\", "/") &&
-            regCounter > fileRegStartIdx
-          )
-            full = true
+          if (regCounter > fileRegStartIdx) full = true
           var textAfterEnd = full ? newText : newText.substring(end)
 
           var regex = new RegExp(
@@ -548,12 +543,7 @@ export function activate(context: vscode.ExtensionContext) {
           continue
         }
         var i = 0
-        if (
-          document.uri.fsPath.replace("\\", "/") !==
-            regFilePath.replace("\\", "/") &&
-          regCounter > fileRegStartIdx
-        )
-          full = true
+        if (regCounter > fileRegStartIdx) full = true
         var textAfterEnd = full ? newText : newText.substring(end)
 
         while (i++ == 0 || untilfail) {
