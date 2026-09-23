@@ -12,6 +12,10 @@ declare global {
   function clear(...args: any[]): void
 }
 const regexCache = new Map<string, string>()
+const jsCache = new Map<
+  string,
+  { start: number; end: number; text: string }[]
+>()
 const tokenCache = new Map<
   string,
   {
@@ -31,6 +35,39 @@ function regrep(a: string, s: RegExp, d: string) {
 
   const result = a.replace(s, d)
   regexCache.set(key, result)
+  return result
+}
+function runJs(
+  code: string,
+  text: string,
+): { start: number; end: number; text: string }[] {
+  const key = code + "||" + text
+
+  if (jsCache.has(key)) {
+    return jsCache.get(key)!
+  }
+
+  const fn = new Function("text", code)
+  const result = fn(text)
+  if (!Array.isArray(result)) {
+    throw new Error(
+      `@js block must return an array of {start, end, text}, got ${typeof result}`,
+    )
+  }
+  for (const m of result) {
+    if (
+      typeof m?.start !== "number" ||
+      typeof m?.end !== "number" ||
+      typeof m?.text !== "string"
+    ) {
+      throw new Error(
+        `@js block returned an invalid match: ${JSON.stringify(
+          m,
+        )} — each match needs a numeric start, numeric end, and string text`,
+      )
+    }
+  }
+  jsCache.set(key, result)
   return result
 }
 function getlang(
@@ -355,6 +392,8 @@ export function activate(context: vscode.ExtensionContext) {
     var name: string = "unnamed regex"
     var untilfail: boolean = false
     var full: boolean = false
+    var isJs: boolean = false
+    var jsCode: string = ""
     var fileMatchRequirement: string | undefined
     var diagSeverity: vscode.DiagnosticSeverity | undefined
     var diagMessage: string = ""
@@ -396,7 +435,73 @@ export function activate(context: vscode.ExtensionContext) {
         flags = "gm"
         untilfail = false
         full = false
+        isJs = false
         startreg = value
+      } else if (mode === "inactive" && token == "js") {
+        mode = "started"
+        flags = "gm"
+        untilfail = false
+        full = false
+        isJs = true
+        startreg = ""
+        jsCode = value
+      } else if (mode === "started" && isJs && token === "endjs") {
+        regCounter++
+        if (
+          fileMatchRequirement &&
+          !new RegExp(fileMatchRequirement, "i").test(
+            document.uri.fsPath.replaceAll("\\", "/"),
+          )
+        ) {
+          warn(
+            "fileMatchRequirement",
+            fileMatchRequirement,
+            "does not match the current file",
+            document.uri.fsPath,
+          )
+          name = "unnamed regex"
+          mode = "inactive"
+          isJs = false
+          continue
+        }
+        if (noReplace) {
+          name = "unnamed regex"
+          mode = "inactive"
+          isJs = false
+          continue
+        }
+        log(fileMatchRequirement, document.uri.fsPath)
+        try {
+          if (regCounter > fileRegStartIdx) full = true
+          var textAfterEnd = full ? newText : newText.substring(end)
+          const jsMatches = runJs(jsCode, textAfterEnd)
+          if (jsMatches.length) {
+            const sorted = [...jsMatches].sort(
+              (a, b) => b.start - a.start,
+            )
+            let replaced = textAfterEnd
+            for (const m of sorted) {
+              replaced =
+                replaced.substring(0, m.start) +
+                m.text +
+                replaced.substring(m.end)
+            }
+            if (full) newText = replaced
+            else newText = newText.substring(0, end) + replaced
+          }
+        } catch (e: any) {
+          mode = "inactive"
+          isJs = false
+          showError(
+            name,
+            `@error ${name}\n@js\n${jsCode}\n${e.message}`,
+          )
+          error(`@error ${name}: @js\n`, e.message)
+          continue
+        }
+        name = "unnamed regex"
+        mode = "inactive"
+        isJs = false
       } else if (mode === "started" && token === "replace") {
         mode = "replacing"
         replace = value
@@ -699,9 +804,14 @@ export function activate(context: vscode.ExtensionContext) {
 
           const isAfterName =
             lastTag("@name") > lastTag("@file") &&
-            lastTag("@name") > lastTag("@regex")
-          const isAfterFile = lastTag("@file") > lastTag("@regex")
+            lastTag("@name") > lastTag("@regex") &&
+            lastTag("@name") > lastTag("@js")
+          const isAfterFile =
+            lastTag("@file") > lastTag("@regex") &&
+            lastTag("@file") > lastTag("@js")
           const isAfterRegex = lastTag("@regex") > -1
+          const isAfterJs =
+            lastTag("@js") > lastTag("@regex") && lastTag("@js") > -1
 
           function item(
             label: string,
@@ -729,22 +839,29 @@ export function activate(context: vscode.ExtensionContext) {
           let pName = "50",
             pFile = "51",
             pRegex = "52",
-            pSuffix = "53",
-            pEnd = "99"
+            pJs = "53",
+            pSuffix = "54",
+            pEnd = "99",
+            pEndJs = "99"
 
           if (
             fullText.trim() === "" ||
-            lastTag("@endregex") > lastTag("@name")
+            lastTag("@endregex") > lastTag("@name") ||
+            lastTag("@endjs") > lastTag("@name")
           ) {
             pName = "01"
           } else if (isAfterName) {
             pFile = "01"
             pRegex = "02"
+            pJs = "02"
           } else if (isAfterFile) {
             pRegex = "01"
+            pJs = "01"
           } else if (isAfterRegex) {
             pSuffix = "01"
             pEnd = "02"
+          } else if (isAfterJs) {
+            pEndJs = "01"
           }
 
           return [
@@ -756,6 +873,12 @@ export function activate(context: vscode.ExtensionContext) {
             ),
             item("@file", "@file $0", "File pattern (regex)", pFile),
             item("@regex", "@regex $0", "Match pattern", pRegex),
+            item(
+              "@js",
+              "@js $0",
+              "JavaScript match/replace block",
+              pJs,
+            ),
 
             item(
               "@replace",
@@ -769,6 +892,7 @@ export function activate(context: vscode.ExtensionContext) {
             item("@info", "@info $0", "Info message", pSuffix),
 
             item("@endregex", "@endregex", "End of block", pEnd),
+            item("@endjs", "@endjs", "End of @js block", pEndJs),
           ]
         },
       },
@@ -909,7 +1033,7 @@ class CustomFoldingProvider implements vscode.FoldingRangeProvider {
       }
 
       if (
-        line.startsWith("@endregex") &&
+        (line.startsWith("@endregex") || line.startsWith("@endjs")) &&
         !document.lineAt(i + 1).text.startsWith("@")
       ) {
         blocks.push(new vscode.FoldingRange(start, i))

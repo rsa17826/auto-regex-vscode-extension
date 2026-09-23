@@ -45,6 +45,16 @@
               "name": "regex.error"
             }
           ]
+        },
+        {
+          "match": "(?:// |; |# |^ *)@(endjs)(?: |$)",
+          "name": "regex.tag.forced",
+          "patterns": [
+            {
+              "match": ".",
+              "name": "regex.error"
+            }
+          ]
         }
       ]
     },
@@ -70,6 +80,14 @@
           "end": "$",
           "name": "regex.tag.forced",
           "patterns": [{ "include": "#any" }]
+        },
+        {
+          "begin": "((?:// |; |# |^ *)@js)(?: |$)",
+          "beginCaptures": {
+            "1": { "name": "regex.tag.forced" }
+          },
+          "end": "(?=(?:// |; |# |^ *)@endjs(?: |$))",
+          "patterns": [{ "include": "source.js" }]
         },
         {
           "begin": "(?:// |; |# |^ *)@replace(?: |$)",
