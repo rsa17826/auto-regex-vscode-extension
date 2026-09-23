@@ -952,20 +952,38 @@ function detectComments(
   if (LANG === null) {
     const blockCommentRegex = /(?:^(?!\s*$).+\n?)+/gm
     log("blockCommentRegex", blockCommentRegex)
-    let match
-    // while ((match = blockCommentRegex.exec(text + "\n")) !== null) {
-    comments.push(
-      ...[...(text + "\n").matchAll(/(?:^(?!\s*$).+\n?)+/gm)].map(
-        (match) => {
-          return {
-            match: match[0],
-            length: match[0].length,
-            start: match.index,
-          }
-        },
-      ),
+    const countOpens = (str: string) =>
+      (str.match(/(?:^|\n)@(?:regex|js)\b/g) || []).length
+    const countCloses = (str: string) =>
+      (str.match(/(?:^|\n)@(?:endregex|endjs)\b/g) || []).length
+    const raw = [...(text + "\n").matchAll(blockCommentRegex)].map(
+      (match) => ({
+        match: match[0],
+        length: match[0].length,
+        start: match.index!,
+      }),
     )
-    // }
+    // Blank lines normally split one block from the next, but a blank
+    // line landing inside an unclosed @regex ... @endregex or
+    // @js ... @endjs body must not sever it — that would silently
+    // drop everything from the next chunk's first line up to its next
+    // @-tag. So keep merging consecutive blocks, blank-line gap
+    // included (however many blank lines in a row), for as long as
+    // the accumulated text has more block-opening tags than closing
+    // ones.
+    const merged: { match: string; length: number; start: number }[] =
+      []
+    for (const chunk of raw) {
+      const last = merged[merged.length - 1]
+      if (last && countOpens(last.match) > countCloses(last.match)) {
+        const gap = text.slice(last.start + last.length, chunk.start)
+        last.match += gap + chunk.match
+        last.length += gap.length + chunk.length
+        continue
+      }
+      merged.push({ ...chunk })
+    }
+    comments.push(...merged)
     return comments
   }
   if (lineComment !== undefined) {
