@@ -135,7 +135,10 @@ export function activate(context: vscode.ExtensionContext) {
           options: vscode.FormattingOptions,
           token: vscode.CancellationToken,
         ): Promise<vscode.TextEdit[]> => {
-          if (document.uri.scheme !== "file") {
+          if (
+            document.uri.scheme !== "file" ||
+            isTempJs(document.uri)
+          ) {
             return []
           }
           const uriString = document.uri.toString()
@@ -159,7 +162,11 @@ export function activate(context: vscode.ExtensionContext) {
             false,
           )
           if (isRegexFile(document)) {
-            newText = await formatJsBlocks(newText, options)
+            newText = await formatJsBlocks(
+              document.uri,
+              newText,
+              options,
+            )
           }
 
           if (newText !== document.getText()) {
@@ -742,7 +749,7 @@ export function activate(context: vscode.ExtensionContext) {
   }
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((document) => {
-      if (document.uri.scheme !== "file") {
+      if (document.uri.scheme !== "file" || isTempJs(document.uri)) {
         return
       }
       applyRegex(document)
@@ -773,7 +780,12 @@ export function activate(context: vscode.ExtensionContext) {
           return event
         }
         let document = getDocument(event)
-        if (!document || document.uri.scheme !== "file") return
+        if (
+          !document ||
+          document.uri.scheme !== "file" ||
+          isTempJs(document.uri)
+        )
+          return
         const uri = document.uri.toString()
 
         if (pending.has(uri)) {
@@ -1037,6 +1049,35 @@ function detectComments(
   return comments
 }
 
+const TEMP_PREFIX = ".auto-regex-tmp-"
+const isTempJs = (uri: vscode.Uri) =>
+  path.basename(uri.fsPath).startsWith(TEMP_PREFIX)
+let tempCounter = 0
+
+/**
+ * Runs `use` on a real, short-lived .js file next to `near`. A real file
+ * (unlike an untitled document) opens without an editor tab, is handled by
+ * every JS formatter/linter, and lets them find the project's config.
+ */
+async function withTempJs<T>(
+  near: vscode.Uri,
+  content: string,
+  use: (doc: vscode.TextDocument) => Promise<T>,
+): Promise<T> {
+  const uri = vscode.Uri.file(
+    path.join(
+      path.dirname(near.fsPath),
+      `${TEMP_PREFIX}${process.pid}-${tempCounter++}.js`,
+    ),
+  )
+  await fs.writeFile(uri, new TextEncoder().encode(content))
+  try {
+    return await use(await vscode.workspace.openTextDocument(uri))
+  } finally {
+    await fs.delete(uri)
+  }
+}
+
 function isRegexFile(document: vscode.TextDocument) {
   return document.uri.fsPath.endsWith(".regex")
 }
@@ -1096,31 +1137,32 @@ function applyTextEdits(
 
 /**
  * Formats JS with whatever formatter the user has set for JavaScript, by
- * handing it a throwaway in-memory JavaScript document. The code is NOT
+ * handing it a throwaway .js file. The code is NOT
  * wrapped in a function: wrapping would indent it and the indent can't be
  * removed safely (template literals), and formatters accept a top-level
  * `return`.
  */
 async function formatJsCode(
+  near: vscode.Uri,
   code: string[],
   options: vscode.FormattingOptions,
 ): Promise<string[]> {
-  const doc = await vscode.workspace.openTextDocument({
-    language: "javascript",
-    content: code.join("\n"),
+  return withTempJs(near, code.join("\n"), async (doc) => {
+    // VS Code returns undefined when the formatter has nothing to change
+    // (it also does so when it has no JavaScript formatter to pick)
+    const edits = await vscode.commands.executeCommand<
+      vscode.TextEdit[] | undefined
+    >("vscode.executeFormatDocumentProvider", doc.uri, options)
+    log("@js format edits:", edits?.length)
+    const lines = applyTextEdits(doc, edits ?? []).split("\n")
+    while (lines.length && lines[lines.length - 1].trim() === "")
+      lines.pop()
+    return lines
   })
-  // VS Code returns undefined when the formatter has nothing to change
-  // (it also does so when no JavaScript formatter is installed)
-  const edits = await vscode.commands.executeCommand<
-    vscode.TextEdit[] | undefined
-  >("vscode.executeFormatDocumentProvider", doc.uri, options)
-  const lines = applyTextEdits(doc, edits ?? []).split("\n")
-  while (lines.length && lines[lines.length - 1].trim() === "")
-    lines.pop()
-  return lines
 }
 
 async function formatJsBlocks(
+  near: vscode.Uri,
   text: string,
   options: vscode.FormattingOptions,
 ) {
@@ -1142,7 +1184,7 @@ async function formatJsBlocks(
     if (!core.length) continue
     const out = [
       ...src.slice(0, lead),
-      ...(await formatJsCode(core, options)),
+      ...(await formatJsCode(near, core, options)),
       ...src.slice(src.length - trail),
     ]
     if (hasInline) {
@@ -1202,11 +1244,12 @@ async function lintJsBlocks(document: vscode.TextDocument) {
   for (const block of blocks) {
     // virtual line k (after the head) is document line tagLine + k
     const src = [block.inline, ...block.body]
-    const virtual = await vscode.workspace.openTextDocument({
-      language: "javascript",
-      content: LINT_HEAD + src.join("\n") + "\n}\n",
-    })
-    for (const d of await settledDiagnostics(virtual.uri)) {
+    const diagnostics = await withTempJs(
+      document.uri,
+      LINT_HEAD + src.join("\n") + "\n}\n",
+      (virtual) => settledDiagnostics(virtual.uri),
+    )
+    for (const d of diagnostics) {
       const startK = d.range.start.line - LINT_HEAD_LINES
       const endK = d.range.end.line - LINT_HEAD_LINES
       if (startK < 0 || endK >= src.length) continue // the wrapper itself
