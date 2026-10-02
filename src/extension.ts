@@ -119,6 +119,7 @@ function getlang(
   return langid
 }
 export function activate(context: vscode.ExtensionContext) {
+  context.subscriptions.push(output)
   context.subscriptions.push(
     vscode.languages.registerFoldingRangeProvider(
       { pattern: "**/*" },
@@ -1049,6 +1050,8 @@ function detectComments(
   return comments
 }
 
+const output = vscode.window.createOutputChannel("auto-regex")
+let warnedNoDefaultFormatter = false
 const TEMP_PREFIX = ".auto-regex-tmp-"
 const isTempJs = (uri: vscode.Uri) =>
   path.basename(uri.fsPath).startsWith(TEMP_PREFIX)
@@ -1153,7 +1156,22 @@ async function formatJsCode(
     const edits = await vscode.commands.executeCommand<
       vscode.TextEdit[] | undefined
     >("vscode.executeFormatDocumentProvider", doc.uri, options)
-    log("@js format edits:", edits?.length)
+    const formatter = vscode.workspace
+      .getConfiguration("editor", { languageId: "javascript" })
+      .get<string | null>("defaultFormatter")
+    output.appendLine(
+      `@js format: defaultFormatter=${formatter} edits=${edits?.length}`,
+    )
+    if (
+      edits === undefined &&
+      !formatter &&
+      !warnedNoDefaultFormatter
+    ) {
+      warnedNoDefaultFormatter = true
+      vscode.window.showWarningMessage(
+        `auto-regex: VS Code returned no JavaScript formatting edits and no default JavaScript formatter is set. If it is not just already formatted, set "[javascript]": { "editor.defaultFormatter": "<formatter id>" } in settings.`,
+      )
+    }
     const lines = applyTextEdits(doc, edits ?? []).split("\n")
     while (lines.length && lines[lines.length - 1].trim() === "")
       lines.pop()
@@ -1248,6 +1266,9 @@ async function lintJsBlocks(document: vscode.TextDocument) {
       document.uri,
       LINT_HEAD + src.join("\n") + "\n}\n",
       (virtual) => settledDiagnostics(virtual.uri),
+    )
+    output.appendLine(
+      `@js lint: block at line ${block.tagLine + 1} got ${diagnostics.length} diagnostics`,
     )
     for (const d of diagnostics) {
       const startK = d.range.start.line - LINT_HEAD_LINES
