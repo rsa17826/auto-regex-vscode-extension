@@ -18,12 +18,7 @@ const jsCache = new Map<
 >()
 const tokenCache = new Map<
   string,
-  {
-    token: string
-    value: string
-    string: string
-    end: any
-  }[]
+  { token: string; value: string; string: string }[]
 >()
 
 function regrep(a: string, s: RegExp, d: string) {
@@ -64,6 +59,19 @@ function runJs(
         `@js block returned an invalid match: ${JSON.stringify(
           m,
         )} — each match needs a numeric start, numeric end, and string text`,
+      )
+    }
+    if (
+      !Number.isInteger(m.start) ||
+      !Number.isInteger(m.end) ||
+      m.start < 0 ||
+      m.end < m.start ||
+      m.end > text.length
+    ) {
+      throw new Error(
+        `@js block returned an out-of-range match: ${JSON.stringify(
+          m,
+        )} — start and end are absolute offsets into text (length ${text.length}) with 0 <= start <= end <= text.length; end is exclusive`,
       )
     }
   }
@@ -150,6 +158,9 @@ export function activate(context: vscode.ExtensionContext) {
             diagnosticCollection,
             false,
           )
+          if (isRegexFile(document)) {
+            newText = await formatJsBlocks(newText, options)
+          }
 
           if (newText !== document.getText()) {
             const edit = vscode.TextEdit.replace(
@@ -214,6 +225,20 @@ export function activate(context: vscode.ExtensionContext) {
   const diagnosticCollection =
     vscode.languages.createDiagnosticCollection("auto-regex")
   context.subscriptions.push(diagnosticCollection)
+  const jsDiagnosticCollection =
+    vscode.languages.createDiagnosticCollection("auto-regex-js")
+  context.subscriptions.push(jsDiagnosticCollection)
+  const lintRuns = new Map<string, number>()
+  async function lintJs(document: vscode.TextDocument) {
+    const uri = document.uri.toString()
+    // ?? 0: the first lint of a document has no previous run
+    const run = (lintRuns.get(uri) ?? 0) + 1
+    lintRuns.set(uri, run)
+    const diagnostics = await lintJsBlocks(document)
+    // a newer edit started another lint while this one waited
+    if (lintRuns.get(uri) !== run) return
+    jsDiagnosticCollection.set(document.uri, diagnostics)
+  }
 
   const activeMessages = new Map()
 
@@ -297,24 +322,11 @@ export function activate(context: vscode.ExtensionContext) {
     let newText = text
 
     // let lastCommentEnd = 0
-    function gettoken({
-      match,
-      start,
-      length,
-    }: {
-      match: string
-      start: number
-      length: number
-    }): {
-      token: string
-      value: string
-      string: string
-      end: any
-    }[] {
-      const key = match + "||" + start + "||" + length
-
-      if (tokenCache.has(key)) {
-        return tokenCache.get(key)!
+    function gettoken(
+      match: string,
+    ): { token: string; value: string; string: string }[] {
+      if (tokenCache.has(match)) {
+        return tokenCache.get(match)!
       }
 
       var strs = match
@@ -337,10 +349,9 @@ export function activate(context: vscode.ExtensionContext) {
           token: e.match(/^@(\w+)/)?.[1] ?? "",
           value: e.match(/^@\w+ ?([^]*)$/)?.[1] ?? "",
           string: e,
-          end: start + length,
         }
       })
-      tokenCache.set(key, result)
+      tokenCache.set(match, result)
       return result
     }
     // clear()
@@ -348,11 +359,10 @@ export function activate(context: vscode.ExtensionContext) {
       | { token: string; value: string; end: number }
       | { token: "!reset"; value: undefined; end: undefined }
     )[] = []
-    function pushChunkTokens(chunk: {
-      match: string
-      start: number
-      length: number
-    }) {
+    function pushChunkTokens(
+      chunk: { match: string; start: number; length: number },
+      startsAfterChunk: boolean,
+    ) {
       // Only reset carried-over state (like @file) when the previous
       // chunk ended with a completed @endregex — i.e. the blank line
       // that split this chunk off is a real gap *between* blocks, not
@@ -366,28 +376,46 @@ export function activate(context: vscode.ExtensionContext) {
           end: undefined,
         })
       }
-      tokens.push(...gettoken(chunk))
+      // A rule written in the document being processed (or in the rule
+      // file that is itself the document) only applies to the text after
+      // the chunk that defines it, so it can never rewrite its own
+      // definition. A rule from any other file has no position in this
+      // document, so it applies to all of it.
+      const end = startsAfterChunk ? chunk.start + chunk.length : 0
+      for (const t of gettoken(chunk.match)) {
+        tokens.push({ token: t.token, value: t.value, end })
+      }
     }
-    for (var comment of comments) pushChunkTokens(comment)
-    var fileRegStartIdx = tokens.length
+    const docIsFile = (uri: vscode.Uri) =>
+      uri.fsPath === document.uri.fsPath
+    for (var comment of comments) pushChunkTokens(comment, true)
     error(tokens, "tokens")
-    let regexFileContents: string
     const regFilePath: string =
       (vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath ?? "") +
       "/replace.regex"
     if (vscode.workspace.workspaceFolders) {
+      const workspaceRuleUri = vscode.Uri.file(regFilePath)
       try {
-        const buffer = await fs.readFile(vscode.Uri.file(regFilePath))
-        const decoder = new TextDecoder("utf-8")
-        regexFileContents = decoder.decode(buffer)
-        for (var part of detectComments(regexFileContents, null))
-          pushChunkTokens(part)
+        // when the rule file is the document, use the live text rather
+        // than the saved copy so the offsets match
+        const ruleText =
+          docIsFile(workspaceRuleUri) ? text : (
+            new TextDecoder("utf-8").decode(
+              await fs.readFile(workspaceRuleUri),
+            )
+          )
+        for (var part of detectComments(ruleText, null))
+          pushChunkTokens(part, docIsFile(workspaceRuleUri))
       } catch (err) {
         log("Unable to read replace.regex", err)
       }
     }
-    for (var part of detectComments(await getGlobalSettings(), null))
-      pushChunkTokens(part)
+    const globalRuleText =
+      docIsFile(globalRegexFilePath) ? text : (
+        await getGlobalSettings()
+      )
+    for (var part of detectComments(globalRuleText, null))
+      pushChunkTokens(part, docIsFile(globalRegexFilePath))
     var flags: string = "gm"
     var name: string = "unnamed regex"
     var untilfail: boolean = false
@@ -397,7 +425,6 @@ export function activate(context: vscode.ExtensionContext) {
     var fileMatchRequirement: string | undefined
     var diagSeverity: vscode.DiagnosticSeverity | undefined
     var diagMessage: string = ""
-    var regCounter = 0
     var errgroup = 0
     for (const { token, value, end } of tokens) {
       if (token === "!reset" && value === undefined) {
@@ -446,7 +473,6 @@ export function activate(context: vscode.ExtensionContext) {
         startreg = ""
         jsCode = value
       } else if (mode === "started" && isJs && token === "endjs") {
-        regCounter++
         if (
           fileMatchRequirement &&
           !new RegExp(fileMatchRequirement, "i").test(
@@ -472,22 +498,30 @@ export function activate(context: vscode.ExtensionContext) {
         }
         log(fileMatchRequirement, document.uri.fsPath)
         try {
-          if (regCounter > fileRegStartIdx) full = true
-          var textAfterEnd = full ? newText : newText.substring(end)
-          const jsMatches = runJs(jsCode, textAfterEnd)
+          // offsets returned by the js are absolute within the text it
+          // was given, which starts at `from`
+          const from = full ? 0 : end
+          const target = newText.substring(from)
+          const jsMatches = runJs(jsCode, target)
           if (jsMatches.length) {
-            const sorted = [...jsMatches].sort(
+            let replaced = target
+            let limit = target.length
+            // last to first so earlier offsets stay valid
+            for (const m of [...jsMatches].sort(
               (a, b) => b.start - a.start,
-            )
-            let replaced = textAfterEnd
-            for (const m of sorted) {
+            )) {
+              if (m.end > limit) {
+                throw new Error(
+                  `@js matches overlap: ${JSON.stringify(m)} runs into a later match starting at ${limit}`,
+                )
+              }
               replaced =
                 replaced.substring(0, m.start) +
                 m.text +
                 replaced.substring(m.end)
+              limit = m.start
             }
-            if (full) newText = replaced
-            else newText = newText.substring(0, end) + replaced
+            newText = newText.substring(0, from) + replaced
           }
         } catch (e: any) {
           mode = "inactive"
@@ -518,8 +552,6 @@ export function activate(context: vscode.ExtensionContext) {
       } else if (mode === "diagnosing" && token === "errgroup") {
         errgroup = Number(value)
       } else if (mode === "diagnosing" && token === "endregex") {
-        // startreg = startreg.replaceAll("\\\\", "\\")
-        regCounter++
         if (
           fileMatchRequirement &&
           !new RegExp(fileMatchRequirement, "i").test(
@@ -537,15 +569,14 @@ export function activate(context: vscode.ExtensionContext) {
         }
         log(fileMatchRequirement, document.uri.fsPath)
         try {
-          if (regCounter > fileRegStartIdx) full = true
-          var textAfterEnd = full ? newText : newText.substring(end)
+          var searchOffset = full ? 0 : end
+          var textAfterEnd = newText.substring(searchOffset)
 
           var regex = new RegExp(
             startreg,
             flags.replace("d", "") + "d",
           )
           var newDiagnostics: vscode.Diagnostic[] = []
-          var searchOffset = full ? 0 : end
           const hasbr = text.includes("\r")
           for (const match of textAfterEnd.matchAll(regex)) {
             const indices = match.indices?.[errgroup]
@@ -610,8 +641,6 @@ export function activate(context: vscode.ExtensionContext) {
           mode = "inactive"
           continue
         }
-        // startreg = startreg.replaceAll("\\\\", "\\")
-        regCounter++
         if (
           fileMatchRequirement &&
           !new RegExp(fileMatchRequirement, "i").test(
@@ -647,43 +676,19 @@ export function activate(context: vscode.ExtensionContext) {
           error(`@error ${name}: /${startreg}/${flags}\n`, e.message)
           continue
         }
-        var i = 0
-        if (regCounter > fileRegStartIdx) full = true
-        var textAfterEnd = full ? newText : newText.substring(end)
-
-        while (i++ == 0 || untilfail) {
-          if (regex.test(textAfterEnd)) {
-            warn(
-              regCounter,
-              fileRegStartIdx,
-              regCounter > fileRegStartIdx,
-              "replacing...",
-              [regex, replace],
-            )
-            if (full) newText = regrep(newText, regex, replace)
-            else
-              newText =
-                newText.substring(0, end) +
-                (textAfterEnd = regrep(textAfterEnd, regex, replace))
-            // warn("newText", newText)
-            if (i > 3000) {
-              error("too many replacements")
-              break
-            }
-          } else {
-            warn(
-              regCounter,
-              fileRegStartIdx,
-              regCounter > fileRegStartIdx,
-              document.uri.fsPath !== regFilePath,
-              document.uri.fsPath,
-              regFilePath,
-              "not replacing...",
-              [regex, replace],
-            )
+        const from = full ? 0 : end
+        let body = newText.substring(from)
+        let iterations = 0
+        do {
+          const replaced = regrep(body, regex, replace)
+          if (replaced === body) break
+          body = replaced
+          if (++iterations >= 3000) {
+            error("too many replacements")
             break
           }
-        }
+        } while (untilfail)
+        newText = newText.substring(0, from) + body
         name = "unnamed regex"
         mode = "inactive"
       }
@@ -780,6 +785,7 @@ export function activate(context: vscode.ExtensionContext) {
           setTimeout(async () => {
             pending.delete(uri)
             await applyRegex(document, true)
+            if (isRegexFile(document)) await lintJs(document)
           }, 300), // 200-500ms is typical
         )
       }),
@@ -1029,6 +1035,200 @@ function detectComments(
   }
 
   return comments
+}
+
+function isRegexFile(document: vscode.TextDocument) {
+  return document.uri.fsPath.endsWith(".regex")
+}
+
+interface JsBlock {
+  tagLine: number
+  endLine: number
+  /** length of the "@js" tag plus its optional single separator */
+  prefix: number
+  /** code on the same line as @js */
+  inline: string
+  /** lines strictly between @js and @endjs */
+  body: string[]
+}
+
+function findJsBlocks(lines: string[]) {
+  const blocks: JsBlock[] = []
+  const unclosed: number[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const open = /^@js(?:[ \t]|$)/.exec(lines[i])
+    if (!open) continue
+    const endLine = lines.findIndex(
+      (l, j) => j > i && /^@endjs\b/.test(l),
+    )
+    if (endLine === -1) {
+      unclosed.push(i)
+      continue
+    }
+    blocks.push({
+      tagLine: i,
+      endLine,
+      prefix: open[0].length,
+      inline: lines[i].slice(open[0].length),
+      body: lines.slice(i + 1, endLine),
+    })
+    i = endLine
+  }
+  return { blocks, unclosed }
+}
+
+function applyTextEdits(
+  doc: vscode.TextDocument,
+  edits: vscode.TextEdit[],
+) {
+  let out = doc.getText()
+  for (const e of [...edits].sort(
+    (a, b) =>
+      doc.offsetAt(b.range.start) - doc.offsetAt(a.range.start),
+  )) {
+    out =
+      out.slice(0, doc.offsetAt(e.range.start)) +
+      e.newText +
+      out.slice(doc.offsetAt(e.range.end))
+  }
+  return out
+}
+
+/**
+ * Formats JS with whatever formatter the user has set for JavaScript, by
+ * handing it a throwaway in-memory JavaScript document. The code is NOT
+ * wrapped in a function: wrapping would indent it and the indent can't be
+ * removed safely (template literals), and formatters accept a top-level
+ * `return`.
+ */
+async function formatJsCode(
+  code: string[],
+  options: vscode.FormattingOptions,
+): Promise<string[]> {
+  const doc = await vscode.workspace.openTextDocument({
+    language: "javascript",
+    content: code.join("\n"),
+  })
+  // VS Code returns undefined when the formatter has nothing to change
+  // (it also does so when no JavaScript formatter is installed)
+  const edits = await vscode.commands.executeCommand<
+    vscode.TextEdit[] | undefined
+  >("vscode.executeFormatDocumentProvider", doc.uri, options)
+  const lines = applyTextEdits(doc, edits ?? []).split("\n")
+  while (lines.length && lines[lines.length - 1].trim() === "")
+    lines.pop()
+  return lines
+}
+
+async function formatJsBlocks(
+  text: string,
+  options: vscode.FormattingOptions,
+) {
+  const lines = text.split("\n")
+  // last block first so earlier line numbers stay valid
+  for (const block of findJsBlocks(lines).blocks.reverse()) {
+    const hasInline = block.inline.trim() !== ""
+    const src = hasInline ? [block.inline, ...block.body] : block.body
+    // keep the blank lines the author left after @js / before @endjs
+    let lead = 0
+    while (lead < src.length && src[lead].trim() === "") lead++
+    let trail = 0
+    while (
+      trail < src.length - lead &&
+      src[src.length - 1 - trail].trim() === ""
+    )
+      trail++
+    const core = src.slice(lead, src.length - trail)
+    if (!core.length) continue
+    const out = [
+      ...src.slice(0, lead),
+      ...(await formatJsCode(core, options)),
+      ...src.slice(src.length - trail),
+    ]
+    if (hasInline) {
+      lines[block.tagLine] =
+        lines[block.tagLine].slice(0, block.prefix) + out.shift()
+    }
+    lines.splice(
+      block.tagLine + 1,
+      block.endLine - block.tagLine - 1,
+      ...out,
+    )
+  }
+  return lines.join("\n")
+}
+
+// The code is wrapped so `return` and `text` are valid, and @ts-check makes
+// the TypeScript service report semantic errors (typos, undefined names) too.
+const LINT_HEAD = "// @ts-check\nfunction __autoRegexJs(text) {\n"
+const LINT_HEAD_LINES = 2
+
+/** Resolves with the diagnostics for uri once they stop changing. */
+function settledDiagnostics(
+  uri: vscode.Uri,
+  settleMs = 400,
+  timeoutMs = 3000,
+): Promise<vscode.Diagnostic[]> {
+  return new Promise((resolve) => {
+    let quiet: NodeJS.Timeout | undefined
+    const done = () => {
+      sub.dispose()
+      clearTimeout(hard)
+      clearTimeout(quiet)
+      resolve(vscode.languages.getDiagnostics(uri))
+    }
+    const sub = vscode.languages.onDidChangeDiagnostics((e) => {
+      if (!e.uris.some((u) => u.toString() === uri.toString())) return
+      clearTimeout(quiet)
+      quiet = setTimeout(done, settleMs)
+    })
+    // clean code may never produce a diagnostics event
+    const hard = setTimeout(done, timeoutMs)
+  })
+}
+
+async function lintJsBlocks(document: vscode.TextDocument) {
+  const { blocks, unclosed } = findJsBlocks(
+    document.getText().split(/\r?\n/),
+  )
+  const result: vscode.Diagnostic[] = unclosed.map(
+    (line) =>
+      new vscode.Diagnostic(
+        document.lineAt(line).range,
+        "@js is never closed with @endjs",
+        vscode.DiagnosticSeverity.Error,
+      ),
+  )
+  for (const block of blocks) {
+    // virtual line k (after the head) is document line tagLine + k
+    const src = [block.inline, ...block.body]
+    const virtual = await vscode.workspace.openTextDocument({
+      language: "javascript",
+      content: LINT_HEAD + src.join("\n") + "\n}\n",
+    })
+    for (const d of await settledDiagnostics(virtual.uri)) {
+      const startK = d.range.start.line - LINT_HEAD_LINES
+      const endK = d.range.end.line - LINT_HEAD_LINES
+      if (startK < 0 || endK >= src.length) continue // the wrapper itself
+      const col = (k: number, c: number) =>
+        k === 0 ? block.prefix + c : c
+      const mapped = new vscode.Diagnostic(
+        new vscode.Range(
+          block.tagLine + startK,
+          col(startK, d.range.start.character),
+          block.tagLine + endK,
+          col(endK, d.range.end.character),
+        ),
+        d.message,
+        d.severity,
+      )
+      mapped.source = d.source ? `@js (${d.source})` : "@js"
+      mapped.code = d.code
+      mapped.tags = d.tags
+      result.push(mapped)
+    }
+  }
+  return result
 }
 
 function escapeRegExp(string: string): string {
