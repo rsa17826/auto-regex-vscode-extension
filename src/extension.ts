@@ -3,6 +3,7 @@ const fs = vscode.workspace.fs
 import * as afs from "fs"
 import * as path from "path"
 import { createHash } from "crypto"
+import { createRequire } from "module"
 
 Object.assign(global, console)
 declare global {
@@ -242,7 +243,6 @@ export function activate(context: vscode.ExtensionContext) {
     SHADOW_DIR_NAME,
   )
   const shadowCreated = new Set<string>()
-  const shadowToOriginal = new Map<string, vscode.TextDocument>()
   const shadowUriFor = (document: vscode.TextDocument) =>
     vscode.Uri.joinPath(
       shadowDir,
@@ -264,7 +264,6 @@ export function activate(context: vscode.ExtensionContext) {
       await fs.writeFile(uri, new Uint8Array())
       shadowCreated.add(key)
     }
-    shadowToOriginal.set(key, document)
     const shadow = await vscode.workspace.openTextDocument(uri)
     const want = buildShadow(document.getText())
     if (shadow.getText() !== want) {
@@ -286,9 +285,8 @@ export function activate(context: vscode.ExtensionContext) {
     return shadow
   }
   function publishJsDiagnostics(document: vscode.TextDocument) {
-    const { unclosed } = findJsBlocks(
-      document.getText().split(/\r?\n/),
-    )
+    const lines = document.getText().split(/\r?\n/)
+    const { blocks, unclosed } = findJsBlocks(lines)
     const result: vscode.Diagnostic[] = unclosed.map(
       (line) =>
         new vscode.Diagnostic(
@@ -297,51 +295,33 @@ export function activate(context: vscode.ExtensionContext) {
           vscode.DiagnosticSeverity.Error,
         ),
     )
-    const text = document.getText()
-    for (const d of vscode.languages.getDiagnostics(
-      shadowUriFor(document),
-    )) {
-      const range = fromShadowRange(d.range, document.lineCount)
-      if (!range) continue // the head/tail the shadow adds
-      // the function header/footer the shadow adds sit outside the blocks
-      if (!jsBlockAt(text, range.start.line, range.start.character))
-        continue
-      const mapped = new vscode.Diagnostic(
-        range,
-        d.message,
-        d.severity,
-      )
-      mapped.source = d.source ? `@js (${d.source})` : "@js"
-      mapped.code = d.code
-      mapped.tags = d.tags
-      result.push(mapped)
-    }
+    // the TypeScript checker only has to be loaded for files with @js
+    if (blocks.length)
+      result.push(...checkJsBlocks(document, lines, blocks))
     output.appendLine(
       `@js lint: ${result.length} diagnostics for ${path.basename(document.uri.fsPath)}`,
     )
     jsDiagnosticCollection.set(document.uri, result)
   }
+  let lastToast = ""
   function reportError(what: string, err: unknown) {
     const msg =
       err instanceof Error ? (err.stack ?? err.message) : String(err)
     output.appendLine(`${what} failed: ${msg}`)
+    // the output channel has every failure; the popup only repeats on a new one
+    if (msg === lastToast) return
+    lastToast = msg
     vscode.window.showErrorMessage(
       `auto-regex: ${what} failed: ${msg}`,
     )
   }
-  async function lintJs(document: vscode.TextDocument) {
-    await ensureShadow(document)
-    // tsserver publishes its results through onDidChangeDiagnostics below
-    publishJsDiagnostics(document)
+  function lintJs(document: vscode.TextDocument) {
+    try {
+      publishJsDiagnostics(document)
+    } catch (e) {
+      reportError("@js lint", e)
+    }
   }
-  context.subscriptions.push(
-    vscode.languages.onDidChangeDiagnostics((e) => {
-      for (const uri of e.uris) {
-        const original = shadowToOriginal.get(uri.toString())
-        if (original) publishJsDiagnostics(original)
-      }
-    }),
-  )
 
   // ---- forward the language features of the JS extension ----
   const regexFiles = { pattern: "**/*.regex" }
@@ -1060,11 +1040,7 @@ export function activate(context: vscode.ExtensionContext) {
           setTimeout(async () => {
             pending.delete(uri)
             await applyRegex(document, true)
-            if (isRegexFile(document)) {
-              await lintJs(document).catch((e) =>
-                reportError("@js lint", e),
-              )
-            }
+            if (isRegexFile(document)) lintJs(document)
           }, 300), // 200-500ms is typical
         )
       }),
@@ -1250,7 +1226,7 @@ function detectComments(
     )
     // Blank lines normally split one block from the next, but a blank
     // line landing inside an unclosed @regex ... @endregex or
-    // @js ... @endjs body must not sever it — that would silently
+    // \@js ... @endjs body must not sever it — that would silently
     // drop everything from the next chunk's first line up to its next
     // @-tag. So keep merging consecutive blocks, blank-line gap
     // included (however many blank lines in a row), for as long as
@@ -1493,43 +1469,70 @@ async function formatJsBlocks(
 // The shadow document is the .regex text with everything that is not
 // JavaScript blanked out, so a position in it is a position in the .regex
 // file (shifted down by the two head lines). Each block becomes the body of
-// its own function expression, so `return` is valid (a top-level return makes
-// the checker skip the returned expression), `text` is a typed parameter, and
-// blocks don't share scope. The function header is appended to the line
-// above the block and the closing "})" overwrites the blanked @endjs, so no
-// code line moves. `// @ts-check` makes the TypeScript service report
-// semantic errors too.
+// its own exported function, typed the way runJs uses it: `return` is valid
+// (a top-level return makes the checker skip the returned expression),
+// `text` is a string, and the result must be {start, end, text}[]. The
+// header is appended to the line above the block (no leading ";", which
+// stops the JSDoc attaching) and the closing "};" overwrites the blanked
+// @endjs, so no code line moves. `export` makes the
+// file a module, so blocks of different files can't clash and the unused
+// functions aren't reported.
 export const SHADOW_HEAD_LINES = 2
-const BLOCK_OPEN = ";/** @param {string} text */ (function (text) {"
+const SHADOW_TYPEDEF =
+  "/** @typedef {{ start: number, end: number, text: string }} AutoRegexMatch */"
+const blockHeader = (n: number) =>
+  `/** @type {(text: string) => AutoRegexMatch[]} */ export const __autoRegexBlock${n} = function (text) {`
+
+// A comment after a token on the same line is that token's trailing comment,
+// so the JSDoc in the header only attaches to the declaration when it starts
+// a line. The tag line is free for it unless code follows @js on that line;
+// then it goes after the previous line, which is fine unless that line holds
+// the closing "};" of an earlier block.
+const headerOnTagLine = (b: JsBlock) => b.inline.trim() === ""
 
 export function buildShadow(text: string) {
   const lines = text.split(/\r?\n/)
   const out = [
     "// @ts-check",
-    "",
+    SHADOW_TYPEDEF,
     ...lines.map((l) => " ".repeat(l.length)),
   ]
-  for (const b of findJsBlocks(lines).blocks) {
-    out[b.tagLine + SHADOW_HEAD_LINES - 1] += BLOCK_OPEN
-    out[b.tagLine + SHADOW_HEAD_LINES] =
-      " ".repeat(b.prefix) + b.inline
+  findJsBlocks(lines).blocks.forEach((b, n) => {
+    if (headerOnTagLine(b)) {
+      out[b.tagLine + SHADOW_HEAD_LINES] = blockHeader(n)
+    } else {
+      out[b.tagLine + SHADOW_HEAD_LINES - 1] += blockHeader(n)
+      out[b.tagLine + SHADOW_HEAD_LINES] =
+        " ".repeat(b.prefix) + b.inline
+    }
     for (let i = b.tagLine + 1; i < b.endLine; i++)
       out[i + SHADOW_HEAD_LINES] = lines[i]
     out[b.endLine + SHADOW_HEAD_LINES] =
-      "})" + " ".repeat(lines[b.endLine].length - 2)
-  }
+      "};" + " ".repeat(lines[b.endLine].length - 2)
+  })
   return out.join("\n") + "\n"
 }
+
+const blockAt = (
+  blocks: JsBlock[],
+  line: number,
+  character: number,
+) =>
+  blocks.find(
+    (b) =>
+      (line > b.tagLine && line < b.endLine) ||
+      (line === b.tagLine && character >= b.prefix),
+  )
 
 export function jsBlockAt(
   text: string,
   line: number,
   character: number,
 ) {
-  return findJsBlocks(text.split(/\r?\n/)).blocks.find(
-    (b) =>
-      (line > b.tagLine && line < b.endLine) ||
-      (line === b.tagLine && character >= b.prefix),
+  return blockAt(
+    findJsBlocks(text.split(/\r?\n/)).blocks,
+    line,
+    character,
   )
 }
 
@@ -1547,6 +1550,214 @@ function fromShadowRange(r: vscode.Range, lineCount: number) {
     end,
     r.end.character,
   )
+}
+
+// ---- the TypeScript checker, run inside the extension ----
+// tsserver doesn't report diagnostics for a document that has no editor, so
+// the checker is run directly: VS Code's own copy (or the "typescript.tsdk"
+// folder), a language service over virtual files holding the shadow texts.
+interface TsDiagnostic {
+  start?: number
+  length?: number
+  code: number
+  category: number
+  messageText: unknown
+  reportsUnnecessary?: unknown
+  reportsDeprecated?: unknown
+}
+interface TsApi {
+  createLanguageService(host: object): {
+    getSyntacticDiagnostics(file: string): TsDiagnostic[]
+    getSemanticDiagnostics(file: string): TsDiagnostic[]
+    getSuggestionDiagnostics(file: string): TsDiagnostic[]
+  }
+  ScriptSnapshot: { fromString(text: string): unknown }
+  ScriptTarget: { ESNext: number }
+  ModuleKind: { ESNext: number }
+  getDefaultLibFilePath(options: object): string
+  flattenDiagnosticMessageText(
+    message: unknown,
+    newLine: string,
+  ): string
+  sys: {
+    fileExists(file: string): boolean
+    directoryExists(dir: string): boolean
+    readFile(file: string): string | undefined
+  }
+}
+let tsChecker:
+  | {
+      ts: TsApi
+      service: ReturnType<TsApi["createLanguageService"]>
+      files: Map<string, { version: number; text: string }>
+    }
+  | undefined
+
+function loadTsChecker() {
+  if (tsChecker) return tsChecker
+  const tsdk = vscode.workspace
+    .getConfiguration("typescript")
+    .get<string>("tsdk")
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  let dir: string
+  if (!tsdk) {
+    dir = path.join(
+      vscode.env.appRoot,
+      "extensions",
+      "node_modules",
+      "typescript",
+      "lib",
+    )
+  } else if (path.isAbsolute(tsdk)) {
+    dir = tsdk
+  } else if (root) {
+    dir = path.join(root, tsdk)
+  } else {
+    throw new Error(
+      `"typescript.tsdk" is relative (${tsdk}) but no folder is open`,
+    )
+  }
+  const file = path.join(dir, "typescript.js")
+  let ts: TsApi
+  try {
+    ts = createRequire(__filename)(file)
+  } catch (e) {
+    throw new Error(
+      `could not load the TypeScript compiler from ${file}; set "typescript.tsdk" to a typescript/lib folder (${e})`,
+    )
+  }
+  const options = {
+    allowJs: true,
+    checkJs: true,
+    noEmit: true,
+    target: ts.ScriptTarget.ESNext,
+    module: ts.ModuleKind.ESNext,
+    // the code runs in node, where console etc. exist
+    lib: ["lib.esnext.d.ts", "lib.dom.d.ts"],
+    types: [],
+    skipLibCheck: true,
+  }
+  const files = new Map<string, { version: number; text: string }>()
+  const service = ts.createLanguageService({
+    getCompilationSettings: () => options,
+    getScriptFileNames: () => [...files.keys()],
+    // the lib files are never in `files`, and never change
+    getScriptVersion: (f: string) =>
+      String(files.get(f)?.version ?? 0),
+    getScriptSnapshot: (f: string) => {
+      const text = files.get(f)?.text ?? ts.sys.readFile(f)
+      return text === undefined ? undefined : (
+          ts.ScriptSnapshot.fromString(text)
+        )
+    },
+    getCurrentDirectory: () => "/",
+    getDefaultLibFileName: (o: object) => ts.getDefaultLibFilePath(o),
+    fileExists: (f: string) => files.has(f) || ts.sys.fileExists(f),
+    readFile: (f: string) => files.get(f)?.text ?? ts.sys.readFile(f),
+    directoryExists: (d: string) => ts.sys.directoryExists(d),
+  })
+  return (tsChecker = { ts, service, files })
+}
+
+/**
+ * Where a diagnostic of the shadow belongs in the .regex file. Problems in
+ * the added function header/footer are the block's own (a missing return, a
+ * wrong return type) and go on its @js / @endjs tag; other things there
+ * (e.g. hints) have no place in the file.
+ */
+function shadowRangeToDoc(
+  range: vscode.Range,
+  lines: string[],
+  blocks: JsBlock[],
+  isProblem: boolean,
+) {
+  const line = range.start.line
+  for (const b of blocks) {
+    const onTag = headerOnTagLine(b)
+    const headerCol =
+      onTag || b.tagLine === 0 ? 0 : lines[b.tagLine - 1].length
+    if (
+      line === b.tagLine + SHADOW_HEAD_LINES - (onTag ? 0 : 1) &&
+      range.start.character >= headerCol
+    )
+      return isProblem ?
+          new vscode.Range(b.tagLine, 0, b.tagLine, 3)
+        : undefined
+    if (line === b.endLine + SHADOW_HEAD_LINES)
+      return isProblem ?
+          new vscode.Range(b.endLine, 0, b.endLine, 6)
+        : undefined
+  }
+  const mapped = fromShadowRange(range, lines.length)
+  if (
+    !mapped ||
+    !blockAt(blocks, mapped.start.line, mapped.start.character)
+  )
+    return undefined
+  return mapped
+}
+
+function checkJsBlocks(
+  document: vscode.TextDocument,
+  lines: string[],
+  blocks: JsBlock[],
+) {
+  const { ts, service, files } = loadTsChecker()
+  const name = `/__auto-regex__/${createHash("md5").update(document.uri.fsPath).digest("hex")}.js`
+  const shadow = buildShadow(document.getText())
+  const known = files.get(name)
+  if (known?.text !== shadow)
+    files.set(name, {
+      version: (known?.version ?? 0) + 1,
+      text: shadow,
+    })
+  const starts = [0]
+  for (let i = 0; i < shadow.length; i++)
+    if (shadow[i] === "\n") starts.push(i + 1)
+  const position = (offset: number) => {
+    let line = starts.findIndex((s) => s > offset) - 1
+    if (line < 0) line = starts.length - 1
+    return new vscode.Position(line, offset - starts[line])
+  }
+  const severities = [
+    vscode.DiagnosticSeverity.Warning,
+    vscode.DiagnosticSeverity.Error,
+    vscode.DiagnosticSeverity.Hint,
+    vscode.DiagnosticSeverity.Information,
+  ]
+  const result: vscode.Diagnostic[] = []
+  for (const d of [
+    ...service.getSyntacticDiagnostics(name),
+    ...service.getSemanticDiagnostics(name),
+    ...service.getSuggestionDiagnostics(name),
+  ]) {
+    if (d.start === undefined || d.length === undefined) continue
+    const range = shadowRangeToDoc(
+      new vscode.Range(
+        position(d.start),
+        position(d.start + d.length),
+      ),
+      lines,
+      blocks,
+      d.category === 0 || d.category === 1,
+    )
+    if (!range) continue
+    const mapped = new vscode.Diagnostic(
+      range,
+      ts.flattenDiagnosticMessageText(d.messageText, "\n"),
+      severities[d.category],
+    )
+    mapped.source = "@js (ts)"
+    mapped.code = d.code
+    const tags: vscode.DiagnosticTag[] = []
+    if (d.reportsUnnecessary)
+      tags.push(vscode.DiagnosticTag.Unnecessary)
+    if (d.reportsDeprecated)
+      tags.push(vscode.DiagnosticTag.Deprecated)
+    mapped.tags = tags
+    result.push(mapped)
+  }
+  return result
 }
 
 function escapeRegExp(string: string): string {
