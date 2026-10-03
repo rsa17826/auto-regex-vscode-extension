@@ -297,15 +297,15 @@ export function activate(context: vscode.ExtensionContext) {
           vscode.DiagnosticSeverity.Error,
         ),
     )
+    const text = document.getText()
     for (const d of vscode.languages.getDiagnostics(
       shadowUriFor(document),
     )) {
-      const code = typeof d.code === "object" ? d.code.value : d.code
-      // "return outside a function": returning the matches is how a @js
-      // block works
-      if (code === 1108) continue
       const range = fromShadowRange(d.range, document.lineCount)
       if (!range) continue // the head/tail the shadow adds
+      // the function header/footer the shadow adds sit outside the blocks
+      if (!jsBlockAt(text, range.start.line, range.start.character))
+        continue
       const mapped = new vscode.Diagnostic(
         range,
         d.message,
@@ -1492,22 +1492,33 @@ async function formatJsBlocks(
 
 // The shadow document is the .regex text with everything that is not
 // JavaScript blanked out, so a position in it is a position in the .regex
-// file (except for the one added head line). Each block is wrapped in { }
-// (written over the blanked @js / @endjs tags) so let/const in separate
-// blocks don't collide. `text` is declared at the end, and `// @ts-check`
-// makes the TypeScript service report semantic errors too.
-const SHADOW_HEAD = "// @ts-check\n"
-const SHADOW_TAIL = "\n/** @type {string} */\nvar text;\n"
+// file (shifted down by the two head lines). Each block becomes the body of
+// its own function expression, so `return` is valid (a top-level return makes
+// the checker skip the returned expression), `text` is a typed parameter, and
+// blocks don't share scope. The function header is appended to the line
+// above the block and the closing "})" overwrites the blanked @endjs, so no
+// code line moves. `// @ts-check` makes the TypeScript service report
+// semantic errors too.
+export const SHADOW_HEAD_LINES = 2
+const BLOCK_OPEN = ";/** @param {string} text */ (function (text) {"
 
 export function buildShadow(text: string) {
   const lines = text.split(/\r?\n/)
-  const out = lines.map((l) => " ".repeat(l.length))
+  const out = [
+    "// @ts-check",
+    "",
+    ...lines.map((l) => " ".repeat(l.length)),
+  ]
   for (const b of findJsBlocks(lines).blocks) {
-    out[b.tagLine] = "{" + " ".repeat(b.prefix - 1) + b.inline
-    for (let i = b.tagLine + 1; i < b.endLine; i++) out[i] = lines[i]
-    out[b.endLine] = "}" + " ".repeat(lines[b.endLine].length - 1)
+    out[b.tagLine + SHADOW_HEAD_LINES - 1] += BLOCK_OPEN
+    out[b.tagLine + SHADOW_HEAD_LINES] =
+      " ".repeat(b.prefix) + b.inline
+    for (let i = b.tagLine + 1; i < b.endLine; i++)
+      out[i + SHADOW_HEAD_LINES] = lines[i]
+    out[b.endLine + SHADOW_HEAD_LINES] =
+      "})" + " ".repeat(lines[b.endLine].length - 2)
   }
-  return SHADOW_HEAD + out.join("\n") + SHADOW_TAIL
+  return out.join("\n") + "\n"
 }
 
 export function jsBlockAt(
@@ -1523,12 +1534,12 @@ export function jsBlockAt(
 }
 
 const toShadow = (p: vscode.Position) =>
-  new vscode.Position(p.line + 1, p.character)
+  new vscode.Position(p.line + SHADOW_HEAD_LINES, p.character)
 
 /** undefined for the lines the shadow adds around the .regex text */
 function fromShadowRange(r: vscode.Range, lineCount: number) {
-  const start = r.start.line - 1
-  const end = r.end.line - 1
+  const start = r.start.line - SHADOW_HEAD_LINES
+  const end = r.end.line - SHADOW_HEAD_LINES
   if (start < 0 || end >= lineCount) return undefined
   return new vscode.Range(
     start,
