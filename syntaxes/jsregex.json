@@ -66,7 +66,7 @@
           "name": "regex.tag.optional",
           "patterns": [
             {
-              "match": "(?i)(?<= )(?!.*(.).*\\1)[imsxguy]{1,}$",
+              "match": "(?i)(?<= )(?!.*(.).*\\1)[imsxguy]{1}$",
               "name": "regex.replacetext"
             },
             {
@@ -87,6 +87,7 @@
             "1": { "name": "regex.tag.forced" }
           },
           "end": "(?=(?:// |; |# |^ *)@endjs(?: |$))",
+          "contentName": "meta.embedded.block.javascript",
           "patterns": [{ "include": "source.js" }]
         },
         {
@@ -172,11 +173,11 @@
           "name": "regex.any"
         },
         {
-          "match": "\\?{3,}",
+          "match": "\\?{3}",
           "name": "regex.error"
         },
         {
-          "match": "(?:\\{(\\d(?:,\\d?)?)\\}|\\{((?:,\\d?)?)\\}|[\\*\\+])\\?{2,}",
+          "match": "(?:\\{(\\d(?:,\\d?)?)\\}|\\{((?:,\\d?)?)\\}|[\\*\\+])\\?{2}",
           "name": "regex.error"
         },
         {
@@ -184,7 +185,7 @@
           "name": "regex.error"
         },
         {
-          "match": "[\\*\\+]{2,}",
+          "match": "[\\*\\+]{2}",
           "name": "regex.error"
         },
         {
