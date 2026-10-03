@@ -2,6 +2,7 @@ import * as vscode from "vscode"
 const fs = vscode.workspace.fs
 import * as afs from "fs"
 import * as path from "path"
+import { createHash } from "crypto"
 
 Object.assign(global, console)
 declare global {
@@ -236,17 +237,268 @@ export function activate(context: vscode.ExtensionContext) {
   const jsDiagnosticCollection =
     vscode.languages.createDiagnosticCollection("auto-regex-js")
   context.subscriptions.push(jsDiagnosticCollection)
-  const lintRuns = new Map<string, number>()
-  async function lintJs(document: vscode.TextDocument) {
-    const uri = document.uri.toString()
-    // ?? 0: the first lint of a document has no previous run
-    const run = (lintRuns.get(uri) ?? 0) + 1
-    lintRuns.set(uri, run)
-    const diagnostics = await lintJsBlocks(document)
-    // a newer edit started another lint while this one waited
-    if (lintRuns.get(uri) !== run) return
-    jsDiagnosticCollection.set(document.uri, diagnostics)
+  const shadowDir = vscode.Uri.joinPath(
+    context.globalStorageUri,
+    SHADOW_DIR_NAME,
+  )
+  const shadowCreated = new Set<string>()
+  const shadowToOriginal = new Map<string, vscode.TextDocument>()
+  const shadowUriFor = (document: vscode.TextDocument) =>
+    vscode.Uri.joinPath(
+      shadowDir,
+      createHash("md5").update(document.uri.fsPath).digest("hex") +
+        ".js",
+    )
+  /**
+   * Keeps a real .js document in sync with the @js blocks of a .regex
+   * document (see buildShadow). tsserver and every JS extension treat it
+   * as ordinary JavaScript, so requests for the blocks can be forwarded to
+   * it. Its text is changed through edits and never saved, and it never
+   * has an editor, so it is invisible.
+   */
+  async function ensureShadow(document: vscode.TextDocument) {
+    const uri = shadowUriFor(document)
+    const key = uri.toString()
+    if (!shadowCreated.has(key)) {
+      await fs.createDirectory(shadowDir)
+      await fs.writeFile(uri, new Uint8Array())
+      shadowCreated.add(key)
+    }
+    shadowToOriginal.set(key, document)
+    const shadow = await vscode.workspace.openTextDocument(uri)
+    const want = buildShadow(document.getText())
+    if (shadow.getText() !== want) {
+      const edit = new vscode.WorkspaceEdit()
+      edit.replace(
+        uri,
+        new vscode.Range(
+          shadow.positionAt(0),
+          shadow.positionAt(shadow.getText().length),
+        ),
+        want,
+      )
+      if (!(await vscode.workspace.applyEdit(edit))) {
+        throw new Error(
+          "could not update the @js shadow document " + key,
+        )
+      }
+    }
+    return shadow
   }
+  function publishJsDiagnostics(document: vscode.TextDocument) {
+    const { unclosed } = findJsBlocks(
+      document.getText().split(/\r?\n/),
+    )
+    const result: vscode.Diagnostic[] = unclosed.map(
+      (line) =>
+        new vscode.Diagnostic(
+          document.lineAt(line).range,
+          "@js is never closed with @endjs",
+          vscode.DiagnosticSeverity.Error,
+        ),
+    )
+    for (const d of vscode.languages.getDiagnostics(
+      shadowUriFor(document),
+    )) {
+      const code = typeof d.code === "object" ? d.code.value : d.code
+      // "return outside a function": returning the matches is how a @js
+      // block works
+      if (code === 1108) continue
+      const range = fromShadowRange(d.range, document.lineCount)
+      if (!range) continue // the head/tail the shadow adds
+      const mapped = new vscode.Diagnostic(
+        range,
+        d.message,
+        d.severity,
+      )
+      mapped.source = d.source ? `@js (${d.source})` : "@js"
+      mapped.code = d.code
+      mapped.tags = d.tags
+      result.push(mapped)
+    }
+    output.appendLine(
+      `@js lint: ${result.length} diagnostics for ${path.basename(document.uri.fsPath)}`,
+    )
+    jsDiagnosticCollection.set(document.uri, result)
+  }
+  function reportError(what: string, err: unknown) {
+    const msg =
+      err instanceof Error ? (err.stack ?? err.message) : String(err)
+    output.appendLine(`${what} failed: ${msg}`)
+    vscode.window.showErrorMessage(
+      `auto-regex: ${what} failed: ${msg}`,
+    )
+  }
+  async function lintJs(document: vscode.TextDocument) {
+    await ensureShadow(document)
+    // tsserver publishes its results through onDidChangeDiagnostics below
+    publishJsDiagnostics(document)
+  }
+  context.subscriptions.push(
+    vscode.languages.onDidChangeDiagnostics((e) => {
+      for (const uri of e.uris) {
+        const original = shadowToOriginal.get(uri.toString())
+        if (original) publishJsDiagnostics(original)
+      }
+    }),
+  )
+
+  // ---- forward the language features of the JS extension ----
+  const regexFiles = { pattern: "**/*.regex" }
+  async function forward<T>(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    command: string,
+    ...extra: unknown[]
+  ): Promise<T | undefined> {
+    // outside the @js blocks this is a plain regex file
+    if (
+      !jsBlockAt(
+        document.getText(),
+        position.line,
+        position.character,
+      )
+    )
+      return undefined
+    const shadow = await ensureShadow(document)
+    return vscode.commands.executeCommand<T>(
+      command,
+      shadow.uri,
+      toShadow(position),
+      ...extra,
+    )
+  }
+  const mapLocation = (
+    l: vscode.Location | vscode.LocationLink,
+    document: vscode.TextDocument,
+  ): vscode.LocationLink | undefined => {
+    const shadow = shadowUriFor(document).toString()
+    const link: vscode.LocationLink =
+      "targetUri" in l ? l : (
+        { targetUri: l.uri, targetRange: l.range }
+      )
+    if (link.targetUri.toString() !== shadow) return link
+    const targetRange = fromShadowRange(
+      link.targetRange,
+      document.lineCount,
+    )
+    if (!targetRange) return undefined
+    return {
+      originSelectionRange:
+        link.originSelectionRange ?
+          fromShadowRange(
+            link.originSelectionRange,
+            document.lineCount,
+          )
+        : undefined,
+      targetUri: document.uri,
+      targetRange,
+      targetSelectionRange:
+        link.targetSelectionRange ?
+          fromShadowRange(
+            link.targetSelectionRange,
+            document.lineCount,
+          )
+        : undefined,
+    }
+  }
+  context.subscriptions.push(
+    vscode.languages.registerHoverProvider(regexFiles, {
+      provideHover: async (document, position) => {
+        const hovers = await forward<vscode.Hover[]>(
+          document,
+          position,
+          "vscode.executeHoverProvider",
+        )
+        if (!hovers?.length) return undefined
+        const first = hovers.find((h) => h.range)?.range
+        return new vscode.Hover(
+          hovers.flatMap((h) => h.contents),
+          first ?
+            fromShadowRange(first, document.lineCount)
+          : undefined,
+        )
+      },
+    }),
+    vscode.languages.registerDefinitionProvider(regexFiles, {
+      provideDefinition: async (document, position) => {
+        const found = await forward<
+          (vscode.Location | vscode.LocationLink)[]
+        >(document, position, "vscode.executeDefinitionProvider")
+        return found
+          ?.map((l) => mapLocation(l, document))
+          .filter((l) => l !== undefined)
+      },
+    }),
+    vscode.languages.registerReferenceProvider(regexFiles, {
+      provideReferences: async (document, position) => {
+        const found = await forward<vscode.Location[]>(
+          document,
+          position,
+          "vscode.executeReferenceProvider",
+        )
+        return found
+          ?.map((l) => mapLocation(l, document))
+          .filter((l) => l !== undefined)
+          .map((l) => new vscode.Location(l.targetUri, l.targetRange))
+      },
+    }),
+    vscode.languages.registerSignatureHelpProvider(
+      regexFiles,
+      {
+        provideSignatureHelp: (document, position, _token, ctx) =>
+          forward<vscode.SignatureHelp>(
+            document,
+            position,
+            "vscode.executeSignatureHelpProvider",
+            ctx.triggerCharacter,
+          ),
+      },
+      "(",
+      ",",
+    ),
+    vscode.languages.registerCompletionItemProvider(
+      regexFiles,
+      {
+        provideCompletionItems: async (
+          document,
+          position,
+          _token,
+          ctx,
+        ) => {
+          const list = await forward<vscode.CompletionList>(
+            document,
+            position,
+            "vscode.executeCompletionItemProvider",
+            ctx.triggerCharacter,
+          )
+          if (!list) return undefined
+          for (const item of list.items) {
+            const r = item.range
+            if (!r) continue
+            if ("inserting" in r) {
+              const inserting = fromShadowRange(
+                r.inserting,
+                document.lineCount,
+              )
+              const replacing = fromShadowRange(
+                r.replacing,
+                document.lineCount,
+              )
+              item.range =
+                inserting && replacing ?
+                  { inserting, replacing }
+                : undefined
+            } else {
+              item.range = fromShadowRange(r, document.lineCount)
+            }
+          }
+          return list
+        },
+      },
+      ".",
+    ),
+  )
 
   const activeMessages = new Map()
 
@@ -726,6 +978,16 @@ export function activate(context: vscode.ExtensionContext) {
       diagnosticCollection,
       noReplace,
     )
+    if (!noReplace && isRegexFile(document)) {
+      const editor = vscode.workspace.getConfiguration(
+        "editor",
+        document,
+      )
+      newText = await formatJsBlocks(document.uri, newText, {
+        tabSize: editor.get<number>("tabSize")!,
+        insertSpaces: editor.get<boolean>("insertSpaces")!,
+      })
+    }
     if (!noReplace && newText !== text) {
       const edit = new vscode.WorkspaceEdit()
       edit.replace(
@@ -798,7 +1060,11 @@ export function activate(context: vscode.ExtensionContext) {
           setTimeout(async () => {
             pending.delete(uri)
             await applyRegex(document, true)
-            if (isRegexFile(document)) await lintJs(document)
+            if (isRegexFile(document)) {
+              await lintJs(document).catch((e) =>
+                reportError("@js lint", e),
+              )
+            }
           }, 300), // 200-500ms is typical
         )
       }),
@@ -1053,8 +1319,10 @@ function detectComments(
 const output = vscode.window.createOutputChannel("auto-regex")
 let warnedNoDefaultFormatter = false
 const TEMP_PREFIX = ".auto-regex-tmp-"
+const SHADOW_DIR_NAME = "js-shadow"
 const isTempJs = (uri: vscode.Uri) =>
-  path.basename(uri.fsPath).startsWith(TEMP_PREFIX)
+  path.basename(uri.fsPath).startsWith(TEMP_PREFIX) ||
+  uri.fsPath.split(path.sep).includes(SHADOW_DIR_NAME)
 let tempCounter = 0
 
 /**
@@ -1185,8 +1453,12 @@ async function formatJsBlocks(
   options: vscode.FormattingOptions,
 ) {
   const lines = text.split("\n")
+  const { blocks } = findJsBlocks(lines)
+  output.appendLine(
+    `@js format: ${blocks.length} block(s) in ${path.basename(near.fsPath)}`,
+  )
   // last block first so earlier line numbers stay valid
-  for (const block of findJsBlocks(lines).blocks.reverse()) {
+  for (const block of blocks.reverse()) {
     const hasInline = block.inline.trim() !== ""
     const src = hasInline ? [block.inline, ...block.body] : block.body
     // keep the blank lines the author left after @js / before @endjs
@@ -1218,81 +1490,52 @@ async function formatJsBlocks(
   return lines.join("\n")
 }
 
-// The code is wrapped so `return` and `text` are valid, and @ts-check makes
-// the TypeScript service report semantic errors (typos, undefined names) too.
-const LINT_HEAD = "// @ts-check\nfunction __autoRegexJs(text) {\n"
-const LINT_HEAD_LINES = 2
+// The shadow document is the .regex text with everything that is not
+// JavaScript blanked out, so a position in it is a position in the .regex
+// file (except for the one added head line). Each block is wrapped in { }
+// (written over the blanked @js / @endjs tags) so let/const in separate
+// blocks don't collide. `text` is declared at the end, and `// @ts-check`
+// makes the TypeScript service report semantic errors too.
+const SHADOW_HEAD = "// @ts-check\n"
+const SHADOW_TAIL = "\n/** @type {string} */\nvar text;\n"
 
-/** Resolves with the diagnostics for uri once they stop changing. */
-function settledDiagnostics(
-  uri: vscode.Uri,
-  settleMs = 400,
-  timeoutMs = 3000,
-): Promise<vscode.Diagnostic[]> {
-  return new Promise((resolve) => {
-    let quiet: NodeJS.Timeout | undefined
-    const done = () => {
-      sub.dispose()
-      clearTimeout(hard)
-      clearTimeout(quiet)
-      resolve(vscode.languages.getDiagnostics(uri))
-    }
-    const sub = vscode.languages.onDidChangeDiagnostics((e) => {
-      if (!e.uris.some((u) => u.toString() === uri.toString())) return
-      clearTimeout(quiet)
-      quiet = setTimeout(done, settleMs)
-    })
-    // clean code may never produce a diagnostics event
-    const hard = setTimeout(done, timeoutMs)
-  })
+export function buildShadow(text: string) {
+  const lines = text.split(/\r?\n/)
+  const out = lines.map((l) => " ".repeat(l.length))
+  for (const b of findJsBlocks(lines).blocks) {
+    out[b.tagLine] = "{" + " ".repeat(b.prefix - 1) + b.inline
+    for (let i = b.tagLine + 1; i < b.endLine; i++) out[i] = lines[i]
+    out[b.endLine] = "}" + " ".repeat(lines[b.endLine].length - 1)
+  }
+  return SHADOW_HEAD + out.join("\n") + SHADOW_TAIL
 }
 
-async function lintJsBlocks(document: vscode.TextDocument) {
-  const { blocks, unclosed } = findJsBlocks(
-    document.getText().split(/\r?\n/),
+export function jsBlockAt(
+  text: string,
+  line: number,
+  character: number,
+) {
+  return findJsBlocks(text.split(/\r?\n/)).blocks.find(
+    (b) =>
+      (line > b.tagLine && line < b.endLine) ||
+      (line === b.tagLine && character >= b.prefix),
   )
-  const result: vscode.Diagnostic[] = unclosed.map(
-    (line) =>
-      new vscode.Diagnostic(
-        document.lineAt(line).range,
-        "@js is never closed with @endjs",
-        vscode.DiagnosticSeverity.Error,
-      ),
+}
+
+const toShadow = (p: vscode.Position) =>
+  new vscode.Position(p.line + 1, p.character)
+
+/** undefined for the lines the shadow adds around the .regex text */
+function fromShadowRange(r: vscode.Range, lineCount: number) {
+  const start = r.start.line - 1
+  const end = r.end.line - 1
+  if (start < 0 || end >= lineCount) return undefined
+  return new vscode.Range(
+    start,
+    r.start.character,
+    end,
+    r.end.character,
   )
-  for (const block of blocks) {
-    // virtual line k (after the head) is document line tagLine + k
-    const src = [block.inline, ...block.body]
-    const diagnostics = await withTempJs(
-      document.uri,
-      LINT_HEAD + src.join("\n") + "\n}\n",
-      (virtual) => settledDiagnostics(virtual.uri),
-    )
-    output.appendLine(
-      `@js lint: block at line ${block.tagLine + 1} got ${diagnostics.length} diagnostics`,
-    )
-    for (const d of diagnostics) {
-      const startK = d.range.start.line - LINT_HEAD_LINES
-      const endK = d.range.end.line - LINT_HEAD_LINES
-      if (startK < 0 || endK >= src.length) continue // the wrapper itself
-      const col = (k: number, c: number) =>
-        k === 0 ? block.prefix + c : c
-      const mapped = new vscode.Diagnostic(
-        new vscode.Range(
-          block.tagLine + startK,
-          col(startK, d.range.start.character),
-          block.tagLine + endK,
-          col(endK, d.range.end.character),
-        ),
-        d.message,
-        d.severity,
-      )
-      mapped.source = d.source ? `@js (${d.source})` : "@js"
-      mapped.code = d.code
-      mapped.tags = d.tags
-      result.push(mapped)
-    }
-  }
-  return result
 }
 
 function escapeRegExp(string: string): string {
