@@ -201,7 +201,10 @@
       {
         "language": "regex",
         "path": "./syntaxes/jsregex.json",
-        "scopeName": "source.regex"
+        "scopeName": "source.regex",
+        "embeddedLanguages": {
+          "meta.embedded.block.javascript": "javascript"
+        }
       }
     ],
     "languages": [
